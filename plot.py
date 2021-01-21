@@ -61,3 +61,7 @@ def states_and_input(data, key, index):
 
 def performance_index(data):
     plt.plot(data.env["t"], data.env["J"][:, 0, 0], **data.style)
+
+
+def HJB_error(data):
+    plt.plot(data.env["t"], data.env["e_HJB"], **data.style)

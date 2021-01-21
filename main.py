@@ -129,7 +129,8 @@ class Command():
             c = scipy.signal.square([(t - 10) * 2*np.pi / 20])
         else:
             c = 0
-        return np.atleast_2d(c)
+        # return np.atleast_2d(c)
+        return np.atleast_2d(np.sin(t))
 
 
 class CMRAC(BaseSystem):
@@ -154,6 +155,10 @@ class MRACEnv(BaseEnv):
         self.basis = self.x.unc.basis
         self.cmd = Command()
 
+        self.P = scipy.linalg.solve_continuous_are(cfg.Am, cfg.B, cfg.Q_lyap, cfg.R)
+
+        self.BTBinv = np.linalg.inv(cfg.B.T.dot(cfg.B))
+
         self.logger = fym.logging.Logger(Path(cfg.dir, "mrac-env.h5"))
         self.logger.set_info(cfg=cfg)
 
@@ -170,12 +175,17 @@ class MRACEnv(BaseEnv):
         c = self.cmd(t)
 
         e = x - xr
-        u = - W.T.dot(phi)
+        u = self.get_input(e, W, phi)
 
         self.x.set_dot(t, u, c)
         self.xr.set_dot(c)
         self.W.set_dot(e, phi, 0)
         self.J.set_dot(e, u)
+
+    def get_input(self, e, W, phi):
+        un = -np.linalg.inv(cfg.R).dot(cfg.B.T).dot(self.P).dot(e)
+        ua = -W.T.dot(phi)
+        return un + ua
 
     def logger_callback(self, i, t, y, t_hist, ode_hist):
         x, xr, W, J = self.observe_list(y)
@@ -185,9 +195,29 @@ class MRACEnv(BaseEnv):
         Wcirc = self.x.unc.parameter(t)
 
         e = x - xr
-        u = - W.T.dot(phi)
+        u = self.get_input(e, W, phi)
 
-        return dict(t=t, x=x, xr=xr, W=W, Wcirc=Wcirc, e=e, c=c, u=u, J=J)
+        e_HJB = self.get_HJB_error(t, x, xr, W)
+
+        return dict(t=t, x=x, xr=xr, W=W, Wcirc=Wcirc, e=e, c=c, u=u, J=J,
+                    e_HJB=e_HJB)
+
+    def get_HJB_error(self, t, x, xr, W):
+        e = x - xr
+        Wcirc = self.x.unc.parameter(t)
+        phi = self.basis(x)
+
+        B, R = cfg.B, cfg.R
+
+        grad_V_tilde = - B.dot(self.BTBinv).dot(R).dot(W.T).dot(phi)
+        u_tilde = W.T.dot(phi)
+
+        return np.sum([
+            e.T.dot(self.P).dot(cfg.B).dot(W.T.dot(phi) - Wcirc.T.dot(phi)),
+            grad_V_tilde.T.dot(cfg.Am).dot(e),
+            u_tilde.T.dot(R).dot(Wcirc.T).dot(phi),
+            -0.5 * u_tilde.T.dot(R).dot(u_tilde)
+        ])
 
 
 class HMRACEnv(BaseEnv):
@@ -202,6 +232,8 @@ class HMRACEnv(BaseEnv):
         self.cmd = Command()
 
         self.P = scipy.linalg.solve_continuous_are(cfg.Am, cfg.B, cfg.Q_lyap, cfg.R)
+
+        self.BTBinv = np.linalg.inv(cfg.B.T.dot(cfg.B))
 
         self.logger = fym.logging.Logger(Path(cfg.dir, "mrac-env.h5"))
         self.logger.set_info(cfg=cfg)
@@ -250,7 +282,27 @@ class HMRACEnv(BaseEnv):
         e = x - xr
         u = - W.T.dot(phi)
 
-        return dict(t=t, x=x, xr=xr, W=W, Wcirc=Wcirc, e=e, c=c, u=u, J=J)
+        e_HJB = self.get_HJB_error(t, x, xr, W)
+
+        return dict(t=t, x=x, xr=xr, W=W, Wcirc=Wcirc, e=e, c=c, u=u, J=J,
+                    e_HJB=e_HJB)
+
+    def get_HJB_error(self, t, x, xr, W):
+        e = x - xr
+        Wcirc = self.x.unc.parameter(t)
+        phi = self.basis(x)
+
+        B, R = cfg.B, cfg.R
+
+        grad_V_tilde = - B.dot(self.BTBinv).dot(R).dot(W.T).dot(phi)
+        u_tilde = W.T.dot(phi)
+
+        return np.sum([
+            e.T.dot(self.P).dot(cfg.B).dot(W.T.dot(phi) - Wcirc.T.dot(phi)),
+            grad_V_tilde.T.dot(cfg.Am).dot(e),
+            u_tilde.T.dot(R).dot(Wcirc.T).dot(phi),
+            -0.5 * u_tilde.T.dot(R).dot(u_tilde)
+        ])
 
 
 def run_mrac():
@@ -392,14 +444,19 @@ def exp1_plot():
     # =================
     # Performance index
     # =================
-    figsize, pos = plot.posing(1, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
+    ax = plt.subplot(211, position=pos[0])
     [plot.performance_index(d) for d in data]
     plt.ylabel(r"J")
-    plt.xlabel("Time, sec")
     plt.xlim(t_range)
     plt.legend(loc="best")
+
+    plt.subplot(211, sharex=ax, position=pos[1])
+    [plot.HJB_error(d) for d in data]
+    plt.ylabel(r"$\epsilon_{\mathrm{HJB}}$")
+    plt.xlabel("Time, sec")
 
     # Saving
     # basedir = Path("img")
