@@ -36,7 +36,7 @@ def load_config():
     cfg.R = 0.1 * np.eye(4)
     cfg.Rinv = np.linalg.inv(cfg.R)
 
-    cfg.W_init = np.zeros((12, 4))
+    cfg.W_init = np.zeros((9, 4))
 
     # MRAC
     cfg.MRAC = SN()
@@ -52,10 +52,21 @@ def load_config():
     cfg.HMRAC = SN()
     cfg.HMRAC.env_kwargs = dict(
         # solver="odeint", dt=5, ode_step_len=int(5/0.01),
-        solver="rk4", dt=1e-4,
+        solver="rk4", dt=3e-4,
         max_t=cfg.final_time,
     )
-    cfg.HMRAC.Gamma = 1e5
+    cfg.HMRAC.Gamma = 1e4
+
+    # FECMRAC
+    cfg.FECMRAC = SN()
+    cfg.FECMRAC.env_kwargs = dict(
+        solver="rk4", dt=1e-2, max_t=cfg.final_time, ode_step_len=10)
+    cfg.FECMRAC.Gamma = 1e3
+    cfg.FECMRAC.kL = 0.1
+    cfg.FECMRAC.kU = 10
+    cfg.FECMRAC.theta = 0.1
+    cfg.FECMRAC.tauf = 1e-3
+    cfg.FECMRAC.threshold = 1e-10
 
 
 def smooth_jump(t, t0, dt, dy, half=False):
@@ -240,14 +251,14 @@ class MultiRotor(BaseEnv):
         return F_wind, M_wind
 
     def get_W(self, t):
-        # W = np.eye(self.n)
+        W = np.eye(self.n)
         # W[0, 0] += np.sum([
         #     smooth_jump(t, 10, 5, -0.4, half=True),
         #     smooth_jump(t, 20, 5, -0.2, half=True),
         # ])
         # W[1, 1] += smooth_jump(t, 15, 5, -0.2, half=True)
 
-        W = np.diag([0.8, 0.9, 1, 1])
+        # W = np.diag([0.8, 0.9, 1, 1])
 
         return np.clip(W, 0, 1)
 
@@ -667,8 +678,8 @@ class MRACEnv(BaseEnv):
         return ut + un + ua
 
     def basis(self, x, xr, c):
-        xa = np.vstack((x, xr, c))
-        return np.vstack((xa, np.cross(x, x, axis=0)))
+        xa = np.vstack((x, xr))
+        return np.vstack((xa, np.roll(x, 1) * np.roll(x, 2)))
 
     def logger_callback(self, i, t, y, t_hist, ode_hist):
         mult_x, xr, W, J = self.observe_list(y)
@@ -706,6 +717,96 @@ class MRACEnv(BaseEnv):
 #         ])
 
 
+class ResidualFilter(BaseEnv):
+    def __init__(self, basis, B):
+        super().__init__()
+        n, m = cfg.W_init.shape
+        self.xi = BaseSystem(shape=(n, 1))
+        self.z = BaseSystem(shape=(m, 1))
+
+        self.Bdagger = np.linalg.pinv(B)
+        self.tauf = cfg.FECMRAC.tauf
+
+    def set_dot(self, e, phi, u):
+        xi = self.xi.state
+        z = self.z.state
+
+        self.xi.dot = -1 / self.tauf * (xi - phi)
+        self.z.dot = (
+            1 / self.tauf * (self.Bdagger.dot(e) - z)
+            + self.Bdagger.dot(cfg.Am).dot(e)
+            + u
+        )
+
+    def get_y(self, e, z):
+        return - 1 / self.tauf * (self.Bdagger.dot(e) - z)
+
+
+class FECMRACAgent():
+    def __init__(self):
+        n, m = cfg.W_init.shape
+        self.F = np.zeros((n, n))
+        self.G = np.zeros((n, m))
+
+        self.best_F = self.F.copy()
+        self.best_G = self.G.copy()
+
+        self.logger = fym.logging.Logger(Path(cfg.dir, "fecmrac-agent.h5"))
+
+    def close(self):
+        self.logger.close()
+
+    def get_action(self, obs):
+        self.update(obs)
+
+        F, G = self.best_F, self.best_G
+
+        t, *_ = obs
+        eigs, _ = self.get_eig(F, cfg.FECMRAC.threshold)
+        self.logger.record(
+            t=t,
+            eigs=cfg.FECMRAC.Gamma * eigs,
+        )
+
+        return F, G
+
+    def update(self, obs):
+        t, y, xi, phi = obs
+
+        p, q = self._get_pq(obs)
+
+        self.F = q * self.F + p * xi.dot(xi.T)
+        self.G = q * self.G + p * xi.dot(y.T)
+
+        if self.get_eig(self.F)[0][0] > self.get_eig(self.best_F)[0][0]:
+            self.best_F = self.F
+            self.best_G = self.G
+
+    def _get_pq(self, obs):
+        t, y, xi, phi = obs
+
+        p = cfg.FECMRAC.env_kwargs["dt"]
+        xidot = - (xi - phi) / cfg.FECMRAC.tauf
+        nxidot = np.linalg.norm(xidot)
+        k = self._get_k(nxidot)
+        q = 1 - k * p
+
+        return p, q
+
+    def _get_k(self, nxidot):
+        return (cfg.FECMRAC.kL
+                + ((cfg.FECMRAC.kU - cfg.FECMRAC.kL)
+                   * np.tanh(cfg.FECMRAC.theta * nxidot)))
+
+    def get_eig(self, A, threshold=0):
+        eigs, eigv = np.linalg.eig(A)
+        sort = np.argsort(np.real(eigs))  # sort in ascending order
+        eigs = np.real(eigs[sort])
+        eigv = np.real(eigv[:, sort])
+        eigs[eigs < threshold] = 0
+        return eigs, eigv
+
+
 class HMRACEnv(MRACEnv, BaseEnv):
     def __init__(self):
         BaseEnv.__init__(self, **cfg.HMRAC.env_kwargs)
@@ -718,7 +819,9 @@ class HMRACEnv(MRACEnv, BaseEnv):
             cfg.Am, self.B, cfg.Q_lyap, cfg.R)
 
         self.W = CMRAC(self.P, self.B, cfg.HMRAC.Gamma)
+        self.What = BaseSystem(cfg.W_init)
         self.J = PerformanceIndex()
+        self.filter = ResidualFilter(basis=self.basis, B=self.B)
 
         # Not BaseEnv or BaseSystem
         self.cmd = Command()
@@ -730,8 +833,28 @@ class HMRACEnv(MRACEnv, BaseEnv):
         self.logger = fym.logging.Logger(Path(cfg.dir, "hmrac-env.h5"))
         self.logger.set_info(cfg=cfg)
 
-    def set_dot(self, t):
-        mult_x, xr, W, J = self.observe_list()
+    def reset(self):
+        super().reset()
+        return self.observation()
+
+    def step(self, action):
+        F, G = action
+        *_, done = self.update(F=F, G=G)
+        return self.observation(), done
+
+    def observation(self):
+        mult_x, xr, W, What, J, (xi, z) = self.observe_list()
+
+        x = self.get_x(mult_x)
+        e = x - xr
+        y = self.filter.get_y(e, z)
+        t = self.clock.get()
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+        return t, y, xi, phi
+
+    def set_dot(self, t, F, G):
+        mult_x, xr, W, What, J, (xi, z) = self.observe_list()
 
         x = self.get_x(mult_x)
         c = self.cmd.get(t)
@@ -746,11 +869,31 @@ class HMRACEnv(MRACEnv, BaseEnv):
         B = self.B
         composite_term = phi.dot(
             - e.T.dot(cfg.Am.T).dot(self.BBTinv).dot(B)
-            + phi.T.dot(cfg.W_init).dot(cfg.R)
+            + phi.T.dot(What).dot(cfg.R)
             - phi.T.dot(W).dot(cfg.R)
         )
 
         self.multirotor.set_dot(t, u, windvel, windpqr)
         self.xr.set_dot(c)
         self.W.set_dot(e, phi, composite_term)
+        self.What.dot = - cfg.FECMRAC.Gamma * (F.dot(What) - G)
         self.J.set_dot(e, u)
+        self.filter.set_dot(e, phi, u)
+
+    def logger_callback(self, i, t, y, t_hist, ode_hist):
+        mult_x, xr, W, What, J, (xi, z) = self.observe_list(y)
+
+        x = self.get_x(mult_x)
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+
+        e = x - xr
+        u = self.get_input(e, W, phi)
+
+        # e_HJB = self.get_HJB_error(t, x, xr, W, c)
+
+        return dict(
+            t=t, x=x, xr=xr, W=W, What=What, J=J, xi=xi, z=z,
+            e=e, c=c, u=u,
+            # e_HJB=e_HJB,
+        )

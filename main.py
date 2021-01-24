@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 import plot
 import wingrock
-import hexarotor
+import multirotor
 
 # np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
 
@@ -28,6 +28,24 @@ def run_simple(env):
             break
 
     env.close()
+
+
+def run_agent(env, agent):
+    obs = env.reset()
+
+    while True:
+        env.render()
+
+        action = agent.get_action(obs)
+        next_obs, done = env.step(action)
+
+        if done:
+            break
+
+        obs = next_obs
+
+    env.close()
+    agent.close()
 
 
 def exp1():
@@ -194,17 +212,17 @@ def exp1_plot():
 def exp2():
     basedir = Path("data/exp2")
 
-    cfg = hexarotor.cfg
+    cfg = multirotor.cfg
 
-    hexarotor.load_config()
-    cfg.dir = Path(basedir, "data00")
-    cfg.label = "MRAC"
-    run_simple(hexarotor.MRACEnv())
+    # multirotor.load_config()
+    # cfg.dir = Path(basedir, "data00")
+    # cfg.label = "MRAC"
+    # run_simple(multirotor.MRACEnv())
 
-    hexarotor.load_config()
+    multirotor.load_config()
     cfg.dir = Path(basedir, "data01")
     cfg.label = "HMRAC"
-    run_simple(hexarotor.HMRACEnv())
+    run_agent(multirotor.HMRACEnv(), multirotor.FECMRACAgent())
 
 
 def exp2_plot():
@@ -220,8 +238,8 @@ def exp2_plot():
         data.style = dict(label=info["cfg"].label)
         return data
 
-    cfg = hexarotor.cfg
-    hexarotor.load_config()
+    cfg = multirotor.cfg
+    multirotor.load_config()
 
     plt.rc("font", family="Times New Roman")
     plt.rc("text", usetex=True)
@@ -311,13 +329,13 @@ def exp2_plot():
     plt.legend(loc='best')
 
     plt.subplot(312, sharex=ax, position=pos[1])
-    plot.parameters(mrac)
+    [plot.all(d, "W") for d in data]
     plt.ylabel(r"$W$")
     # plt.ylim(0, 85)
 
     plt.subplot(313, sharex=ax, position=pos[2])
-    plot.parameters(hmrac)
-    plt.ylabel(r"$W$")
+    plot.all(hmrac, "What")
+    plt.ylabel(r"$\hat{W}$")
     # plt.ylim(0, 85)
 
     plt.xlabel("Time, sec")
@@ -330,7 +348,7 @@ def main():
     # exp1()
     # exp1_plot()
 
-    exp2()
+    # exp2()
     exp2_plot()
 
 

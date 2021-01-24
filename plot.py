@@ -82,7 +82,10 @@ def vector_by_index(data, key, index, mult=1, style=None):
 
 
 def all(data, key, style=None):
-    return plt.plot(data.env["t"], data.env[key][:, :, 0], **style or data.style)
+    return plt.plot(
+        data.env["t"],
+        data.env[key].reshape(data.env["t"].shape[0], -1),
+        **style or data.style)
 
 
 def matrix_by_index(data, key, index, style=None):
