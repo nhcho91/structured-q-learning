@@ -50,8 +50,8 @@ def h(data):
              **dict(data.style))
 
 
-def parameters(data):
-    lines = plt.plot(data.env["t"], data.env["W"].squeeze(), **data.style)
+def parameters(data, index=None):
+    lines = plt.plot(data.env["t"], data.env["W"][:, index or slice(None), 0], **data.style)
     plt.setp(lines[1:], label=None)
 
 
@@ -65,3 +65,25 @@ def performance_index(data):
 
 def HJB_error(data):
     plt.plot(data.env["t"], data.env["e_HJB"], **data.style)
+
+
+def outputs(data, key, index, style=None):
+    y = data.env[key][:, index]
+
+    if index < 3:
+        y = np.rad2deg(y)
+
+    return plt.plot(data.env["t"], y, **style or data.style)
+
+
+def vector_by_index(data, key, index, mult=1, style=None):
+    y = data.env[key][:, index, 0] * mult
+    return plt.plot(data.env["t"], y, **style or data.style)
+
+
+def all(data, key, style=None):
+    return plt.plot(data.env["t"], data.env[key][:, :, 0], **style or data.style)
+
+
+def matrix_by_index(data, key, index, style=None):
+    return plt.plot(data.env["t"], data.env[key][:, index, index], **style or data.style)
