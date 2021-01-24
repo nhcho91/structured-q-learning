@@ -36,7 +36,7 @@ def load_config():
     cfg.R = 0.1 * np.eye(4)
     cfg.Rinv = np.linalg.inv(cfg.R)
 
-    cfg.W_init = np.zeros((9, 4))
+    cfg.W_init = np.zeros((12, 4))
 
     # MRAC
     cfg.MRAC = SN()
@@ -46,22 +46,20 @@ def load_config():
         max_t=cfg.final_time,
     )
     # cfg.MRAC.Gamma = 8e1
-    cfg.MRAC.Gamma = 1e4
+    cfg.MRAC.Gamma = 1e1
 
     # H-Modification MRAC
     cfg.HMRAC = SN()
     cfg.HMRAC.env_kwargs = dict(
         # solver="odeint", dt=5, ode_step_len=int(5/0.01),
-        solver="rk4", dt=3e-4,
+        solver="rk4", dt=1e-3,
         max_t=cfg.final_time,
     )
-    cfg.HMRAC.Gamma = 1e4
+    cfg.HMRAC.Gamma = 1e1
 
     # FECMRAC
     cfg.FECMRAC = SN()
-    cfg.FECMRAC.env_kwargs = dict(
-        solver="rk4", dt=1e-2, max_t=cfg.final_time, ode_step_len=10)
-    cfg.FECMRAC.Gamma = 1e3
+    cfg.FECMRAC.Gamma = 1e0
     cfg.FECMRAC.kL = 0.1
     cfg.FECMRAC.kU = 10
     cfg.FECMRAC.theta = 0.1
@@ -655,7 +653,9 @@ class MRACEnv(BaseEnv):
 
         x = self.get_x(mult_x)
         c = self.cmd.get(t)
-        phi = self.basis(x, xr, c)
+
+        xa = self.multirotor.observe_flat()
+        phi = self.basis(xa, xr, c)
 
         windvel, windpqr = self.wind.get(t)
 
@@ -678,15 +678,17 @@ class MRACEnv(BaseEnv):
         return ut + un + ua
 
     def basis(self, x, xr, c):
-        xa = np.vstack((x, xr))
-        return np.vstack((xa, np.roll(x, 1) * np.roll(x, 2)))
+        # xa = np.vstack((x, x - xr))
+        x = x[3:, None]
+        return np.vstack((x, np.roll(x[-3:], 1) * np.roll(x[-3:], 2)))
 
     def logger_callback(self, i, t, y, t_hist, ode_hist):
         mult_x, xr, W, J = self.observe_list(y)
 
         x = self.get_x(mult_x)
         c = self.cmd.get(t)
-        phi = self.basis(x, xr, c)
+        xa = y[self.multirotor.flat_index]
+        phi = self.basis(xa, xr, c)
 
         e = x - xr
         u = self.get_input(e, W, phi)
@@ -785,7 +787,7 @@ class FECMRACAgent():
     def _get_pq(self, obs):
         t, y, xi, phi = obs
 
-        p = cfg.FECMRAC.env_kwargs["dt"]
+        p = cfg.HMRAC.env_kwargs["dt"]
         xidot = - (xi - phi) / cfg.FECMRAC.tauf
         nxidot = np.linalg.norm(xidot)
         k = self._get_k(nxidot)
@@ -798,7 +800,7 @@ class FECMRACAgent():
                 + ((cfg.FECMRAC.kU - cfg.FECMRAC.kL)
                    * np.tanh(cfg.FECMRAC.theta * nxidot)))
 
-    def get_eig(self, A, threshold=0):
+    def get_eig(self, A, threshold=1e-10):
         eigs, eigv = np.linalg.eig(A)
         sort = np.argsort(np.real(eigs))  # sort in ascending order
         eigs = np.real(eigs[sort])
@@ -850,7 +852,8 @@ class HMRACEnv(MRACEnv, BaseEnv):
         y = self.filter.get_y(e, z)
         t = self.clock.get()
         c = self.cmd.get(t)
-        phi = self.basis(x, xr, c)
+        xa = self.multirotor.observe_flat()
+        phi = self.basis(xa, xr, c)
         return t, y, xi, phi
 
     def set_dot(self, t, F, G):
@@ -858,7 +861,8 @@ class HMRACEnv(MRACEnv, BaseEnv):
 
         x = self.get_x(mult_x)
         c = self.cmd.get(t)
-        phi = self.basis(x, xr, c)
+        xa = self.multirotor.observe_flat()
+        phi = self.basis(xa, xr, c)
 
         windvel, windpqr = self.wind.get(t)
 
@@ -885,7 +889,8 @@ class HMRACEnv(MRACEnv, BaseEnv):
 
         x = self.get_x(mult_x)
         c = self.cmd.get(t)
-        phi = self.basis(x, xr, c)
+        xa = y[self.multirotor.flat_index]
+        phi = self.basis(xa, xr, c)
 
         e = x - xr
         u = self.get_input(e, W, phi)

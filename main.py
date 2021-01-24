@@ -214,10 +214,10 @@ def exp2():
 
     cfg = multirotor.cfg
 
-    # multirotor.load_config()
-    # cfg.dir = Path(basedir, "data00")
-    # cfg.label = "MRAC"
-    # run_simple(multirotor.MRACEnv())
+    multirotor.load_config()
+    cfg.dir = Path(basedir, "data00")
+    cfg.label = "MRAC"
+    run_simple(multirotor.MRACEnv())
 
     multirotor.load_config()
     cfg.dir = Path(basedir, "data01")
@@ -259,7 +259,8 @@ def exp2_plot():
     hmrac.style.update(basestyle, c="b", ls="-")
 
     # Figure common setup
-    t_range = (0, cfg.final_time)
+    # t_range = (0, cfg.final_time)
+    t_range = (0, 15)
 
     # All in inches
     subsize = (4.05, 0.946)
@@ -284,7 +285,7 @@ def exp2_plot():
     lines += plot.vector_by_index(mrac, "xr", 0, mult=r2d, style=refstyle)
     lines += [plot.vector_by_index(d, "x", 0, r2d)[0] for d in data]
     plt.ylabel(r"$p$ [deg/s]")
-    plt.ylim(-40, 40)
+    # plt.ylim(-40, 40)
     plt.figlegend(
         lines,
         [line.get_label() for line in lines],
@@ -296,19 +297,19 @@ def exp2_plot():
     plot.vector_by_index(mrac, "xr", 1, mult=r2d, style=refstyle)
     [plot.vector_by_index(d, "x", 1, r2d) for d in data]
     plt.ylabel(r"$q$ [deg/s]")
-    plt.ylim(-40, 40)
+    # plt.ylim(-40, 40)
 
     plt.subplot(413, sharex=ax, position=pos[2])
     plot.vector_by_index(mrac, "c", 2, mult=r2d, style=cmdstyle)
     plot.vector_by_index(mrac, "xr", 2, mult=r2d, style=refstyle)
     [plot.vector_by_index(d, "x", 2, r2d) for d in data]
     plt.ylabel(r"$r$ [deg/s]")
-    plt.ylim(-40, 40)
+    # plt.ylim(-40, 40)
 
     plt.subplot(414, sharex=ax, position=pos[3])
     [plot.all(d, "u") for d in data]
     plt.ylabel(r'$u$')
-    # plt.ylim(0, 2)
+    plt.ylim(1.07, 1.47)
 
     plt.xlabel("Time, sec")
     plt.xlim(t_range)
