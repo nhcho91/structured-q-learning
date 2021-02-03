@@ -33,7 +33,7 @@ def load_config():
     ])
 
     cfg.Q_lyap = np.eye(3)
-    cfg.R = 0.1 * np.eye(4)
+    cfg.R = 1 * np.eye(4)
     cfg.Rinv = np.linalg.inv(cfg.R)
 
     cfg.W_init = np.zeros((12, 4))
@@ -59,7 +59,7 @@ def load_config():
 
     # FECMRAC
     cfg.FECMRAC = SN()
-    cfg.FECMRAC.Gamma = 1e0
+    cfg.FECMRAC.Gamma = 1e1
     cfg.FECMRAC.kL = 0.1
     cfg.FECMRAC.kU = 10
     cfg.FECMRAC.theta = 0.1
@@ -598,7 +598,7 @@ class Command():
             sharp_jump(t, 23, 1),
         ])
         r = 0
-        return np.vstack((p, q, r)) * np.deg2rad(35)
+        return np.vstack((p, q, r)) * np.deg2rad(5)
 
 
 class CMRAC(BaseSystem):
@@ -610,7 +610,7 @@ class CMRAC(BaseSystem):
 
     def set_dot(self, e, phi, composite_term):
         self.dot = self.Gamma * (
-            phi.dot(e.T).dot(self.P).dot(self.B)
+            - phi.dot(e.T).dot(self.P).dot(self.B)
             + composite_term
         )
 
@@ -673,8 +673,8 @@ class MRACEnv(BaseEnv):
 
     def get_input(self, e, W, phi):
         ut = self.ut
-        un = -cfg.Rinv.dot(self.B.T).dot(self.P).dot(e)
-        ua = -W.T.dot(phi)
+        un = - cfg.Rinv.dot(self.B.T).dot(self.P).dot(e)
+        ua = W.T.dot(phi)
         return ut + un + ua
 
     def basis(self, x, xr, c):
@@ -830,7 +830,7 @@ class HMRACEnv(MRACEnv, BaseEnv):
         self.wind = Wind()
 
         self.ut = self.multirotor.m * self.multirotor.g / self.multirotor.n
-        self.BBTinv = np.linalg.inv(self.B.dot(self.B.T))
+        self.BTBinv = np.linalg.inv(self.B.T.dot(self.B))
 
         self.logger = fym.logging.Logger(Path(cfg.dir, "hmrac-env.h5"))
         self.logger.set_info(cfg=cfg)
@@ -871,8 +871,8 @@ class HMRACEnv(MRACEnv, BaseEnv):
         u = self.get_input(e, W, phi)
 
         B = self.B
-        composite_term = phi.dot(
-            - e.T.dot(cfg.Am.T).dot(self.BBTinv).dot(B)
+        composite_term = - phi.dot(
+            - e.T.dot(cfg.Am.T).dot(B).dot(self.BTBinv).dot(cfg.R)
             + phi.T.dot(What).dot(cfg.R)
             - phi.T.dot(W).dot(cfg.R)
         )

@@ -2,6 +2,8 @@ import numpy as np
 import scipy
 from types import SimpleNamespace as SN
 from pathlib import Path
+from collections import deque
+import random
 
 import fym
 from fym.core import BaseEnv, BaseSystem
@@ -22,11 +24,12 @@ def load_config():
     cfg.R = np.diag([0.1])
     cfg.Rinv = np.linalg.inv(cfg.R)
 
+    cfg.P = scipy.linalg.solve_lyapunov(cfg.Am.T, -cfg.Q_lyap)
+
     cfg.Wcirc = np.vstack((
-        -18.59521, 15.162375, 0,
-        np.zeros((3, 1)), np.zeros((1, 1)),
-        -62.45153, 9.54708, 21.45291,
+        -18.59521, 15.162375, -62.45153, 9.54708, 21.45291,
     ))
+    cfg.Winit = np.zeros_like(cfg.Wcirc)
 
     cfg.vareps = SN()
     cfg.vareps.freq = 5
@@ -38,12 +41,37 @@ def load_config():
     # MRAC
     cfg.MRAC = SN()
     cfg.MRAC.env_kwargs = dict(
-        solver="odeint", dt=20, max_t=cfg.final_time, ode_step_len=int(20/0.01))
+        max_t=cfg.final_time,
+        solver="odeint", dt=20, ode_step_len=int(20/0.01),
+    )
 
     # H-Modification MRAC
     cfg.HMRAC = SN()
     cfg.HMRAC.env_kwargs = dict(
-        solver="odeint", dt=20, max_t=cfg.final_time, ode_step_len=int(20/0.01))
+        max_t=cfg.final_time,
+        solver="odeint", dt=20, ode_step_len=int(20/0.01),
+    )
+
+    # Value Learner
+    cfg.ValueLearner = SN()
+    cfg.ValueLearner.env_kwargs = dict(
+        max_t=cfg.final_time,
+        solver="rk4", dt=0.1, ode_step_len=10)
+    cfg.ValueLearner.memory_size = 500
+    cfg.ValueLearner.mbatch_size = 32
+    # cfg.ValueLearner.learning_rate = 3.6e6
+    cfg.ValueLearner.learning_rate = 3.7e7
+    cfg.ValueLearner.decaying_rate = 1/30
+    cfg.ValueLearner.EPS = 1e-8
+    cfg.ValueLearner.switching_time = 30
+
+    # Double MRAC
+    cfg.DoubleMRAC = SN()
+    cfg.DoubleMRAC.env_kwargs = dict(
+        max_t=cfg.final_time,
+        solver="odeint", dt=20, ode_step_len=int(20/0.01),
+    )
+    cfg.DoubleMRAC.GammaF = 1e-4
 
 
 def sharp_jump(t, t0, dy=1):
@@ -56,22 +84,28 @@ class System(BaseSystem):
         super().__init__(cfg.x_init)
         self.unc = Uncertainty()
 
-    def set_dot(self, t, u, c):
-        x = self.state
-        self.dot = (
+    def deriv(self, t, x, u, c):
+        return (
             cfg.Am.dot(x)
             + cfg.B.dot(u + self.unc(t, x))
             + cfg.Br.dot(c)
         )
+
+    def set_dot(self, t, u, c):
+        x = self.state
+        self.dot = self.deriv(t, x, u, c)
 
 
 class ReferenceSystem(BaseSystem):
     def __init__(self):
         super().__init__(cfg.x_init)
 
+    def deriv(self, xr, c):
+        return cfg.Am.dot(xr) + cfg.Br.dot(c)
+
     def set_dot(self, c):
         xr = self.state
-        self.dot = cfg.Am.dot(xr) + cfg.Br.dot(c)
+        self.dot = self.deriv(xr, c)
 
 
 class PerformanceIndex(BaseSystem):
@@ -84,15 +118,12 @@ class Uncertainty():
         self.Wcirc = cfg.Wcirc
 
     def basis(self, x, xr, c):
-        xa = np.vstack((x, xr, c))
-        return np.vstack((xa, np.abs(x[:2])*x[1], x[0]**3))
+        return np.vstack((x[:2], np.abs(x[:2])*x[1], x[0]**3))
 
     def parameter(self, t):
         return self.Wcirc
 
     def vareps(self, t, x):
-        # vareps = cfg.vareps.amp * np.sin(cfg.vareps.freq * t) + cfg.vareps.offset
-        # vareps = np.tanh(np.sum(np.abs(x[:2]) * x[0]) + x[1]**3)
         vareps = np.tanh(x[1])
         vareps += np.exp(-t/10) * np.sin(5 * t)
         return cfg.vareps.amp * vareps
@@ -132,7 +163,7 @@ class Command():
 
 class CMRAC(BaseSystem):
     def __init__(self, P, B):
-        super().__init__(shape=cfg.Wcirc.shape)
+        super().__init__(cfg.Winit)
         self.P = P
         self.B = B
 
@@ -149,9 +180,7 @@ class MRACEnv(BaseEnv):
         self.x = System()
         self.xr = ReferenceSystem()
 
-        self.P = scipy.linalg.solve_continuous_are(
-            cfg.Am, cfg.B, cfg.Q_lyap, cfg.R)
-
+        self.P = cfg.P
         self.W = CMRAC(self.P, cfg.B)
         self.J = PerformanceIndex()
         self.cmd = Command()
@@ -222,6 +251,195 @@ class MRACEnv(BaseEnv):
                     e=e, c=c, Wcirc=Wcirc, u=u, e_HJB=e_HJB)
 
 
+class ValueLearnerAgent():
+    def __init__(self):
+        self.memory = deque(maxlen=cfg.ValueLearner.memory_size)
+        self.N = cfg.ValueLearner.mbatch_size
+        self.lr0 = cfg.ValueLearner.learning_rate
+        self.dr = cfg.ValueLearner.decaying_rate
+
+        self.What = np.zeros_like(cfg.Wcirc)
+
+        self.logger = fym.logging.Logger(
+            Path(cfg.dir, "value-learner-agent.h5"))
+        self.logger.set_info(cfg=cfg)
+
+    def get_action(self, obs):
+        t, *_ = obs
+        What = self.What
+        self.logger.record(t=t, What=What)
+        return What
+
+    def update(self, obs, next_obs, reward):
+        t, *_ = obs
+        self.lr = np.exp(-self.dr * t) * self.lr0
+
+        if t < cfg.ValueLearner.switching_time:
+            if reward > cfg.ValueLearner.EPS:
+                self.memory.append([obs, next_obs, reward])
+            if len(self.memory) >= self.N:
+                self.train()
+
+    def close(self):
+        self.logger.close()
+
+    def get_value(self, e, W):
+        What = self.What
+        return 1/2 * (
+            e.T.dot(cfg.P).dot(e)
+            + np.trace((W - What).T.dot(1/cfg.Gamma1).dot(W - What))
+        )
+
+    def train(self):
+        minibatch = random.sample(self.memory, self.N)
+
+        gradsum = 0
+        for data in minibatch:
+            state, next_state, reward = data
+            _, e, W = state
+            _, next_e, next_W = next_state
+
+            V = self.get_value(e, W)
+            V_next = self.get_value(next_e, next_W)
+            error = V_next - V + reward
+            grad_error = (1/cfg.Gamma1) * (W - next_W)
+            gradsum += error * grad_error
+
+        self.What = self.What - self.lr * gradsum / self.N
+
+
+class ValueLearnerEnv(MRACEnv, BaseEnv):
+    def __init__(self):
+        BaseEnv.__init__(self, **cfg.ValueLearner.env_kwargs)
+        self.x = System()
+        self.xr = ReferenceSystem()
+        self.P = cfg.P
+        self.W = CMRAC(self.P, cfg.B)
+        self.F = BaseSystem(np.zeros_like(cfg.Wcirc.dot(cfg.Wcirc.T)))
+        self.J = PerformanceIndex()
+        self.cmd = Command()
+
+        self.basis = self.x.unc.basis
+
+        self.BTBinv = np.linalg.inv(cfg.B.T.dot(cfg.B))
+
+        self.logger = fym.logging.Logger(Path(cfg.dir, "value-learner-env.h5"))
+        self.logger.set_info(cfg=cfg)
+
+    def step(self, action):
+        J = self.J.state
+        *_, done = self.update(What=action)
+        next_obs = self.observation()
+        reward = self.J.state - J
+        return next_obs, reward, done
+
+    def reset(self):
+        super().reset()
+        return self.observation()
+
+    def observation(self):
+        t = self.clock.get()
+        x, xr, W, F, J = self.observe_list()
+        e = x - xr
+        return t, e, W
+
+    def set_dot(self, t, What):
+        x = self.x.state
+        xr = self.xr.state
+        W = self.W.state
+        F = self.F.state
+
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+
+        e = x - xr
+        u = self.get_input(e, W, phi)
+
+        if t > 40:
+            Wtilde = W - What
+            composite_term = - cfg.Gamma1 * F.dot(Wtilde)
+            Fdot = cfg.DoubleMRAC.GammaF * Wtilde.dot(Wtilde.T)
+        else:
+            composite_term = 0
+            Fdot = np.zeros_like(F)
+
+        self.x.set_dot(t, u, c)
+        self.xr.set_dot(c)
+        self.W.set_dot(e, phi, composite_term)
+        self.J.set_dot(e, u)
+        self.F.dot = Fdot
+
+    def logger_callback(self, i, t, y, t_hist, ode_hist):
+        x, xr, W, F, J = self.observe_list(y)
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+
+        Wcirc = self.x.unc.parameter(t)
+
+        e = x - xr
+        u = self.get_input(e, W, phi)
+
+        e_HJB = self.get_HJB_error(t, x, xr, W, c)
+
+        return dict(t=t, x=x, xr=xr, W=W, F=F, J=J,
+                    e=e, c=c, Wcirc=Wcirc, u=u, e_HJB=e_HJB)
+
+
+class DoubleMRACEnv(MRACEnv, BaseEnv):
+    def __init__(self):
+        BaseEnv.__init__(self, **cfg.DoubleMRAC.env_kwargs)
+        self.x = System()
+        self.xr = ReferenceSystem()
+        self.P = cfg.P
+        self.W = CMRAC(self.P, cfg.B)
+        self.F = BaseSystem(np.zeros_like(cfg.Wcirc.dot(cfg.Wcirc.T)))
+        self.J = PerformanceIndex()
+        self.cmd = Command()
+
+        self.basis = self.x.unc.basis
+
+        self.BTBinv = np.linalg.inv(cfg.B.T.dot(cfg.B))
+
+        self.logger = fym.logging.Logger(Path(cfg.dir, "double-mrac-env.h5"))
+        self.logger.set_info(cfg=cfg)
+
+    def set_dot(self, t):
+        x = self.x.state
+        xr = self.xr.state
+        W = self.W.state
+        F = self.F.state
+
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+
+        e = x - xr
+        u = self.get_input(e, W, phi)
+
+        Wtilde = W - cfg.Wcirc
+        composite_term = - cfg.Gamma1 * F.dot(Wtilde)
+
+        self.x.set_dot(t, u, c)
+        self.xr.set_dot(c)
+        self.W.set_dot(e, phi, composite_term)
+        self.J.set_dot(e, u)
+        self.F.dot = cfg.DoubleMRAC.GammaF * Wtilde.dot(Wtilde.T)
+
+    def logger_callback(self, i, t, y, t_hist, ode_hist):
+        x, xr, W, F, J = self.observe_list(y)
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+
+        Wcirc = self.x.unc.parameter(t)
+
+        e = x - xr
+        u = self.get_input(e, W, phi)
+
+        e_HJB = self.get_HJB_error(t, x, xr, W, c)
+
+        return dict(t=t, x=x, xr=xr, W=W, F=F, J=J,
+                    e=e, c=c, Wcirc=Wcirc, u=u, e_HJB=e_HJB)
+
+
 class HMRACEnv(MRACEnv, BaseEnv):
     def __init__(self):
         BaseEnv.__init__(self, **cfg.HMRAC.env_kwargs)
@@ -241,11 +459,6 @@ class HMRACEnv(MRACEnv, BaseEnv):
 
         self.logger = fym.logging.Logger(Path(cfg.dir, "hmrac-env.h5"))
         self.logger.set_info(cfg=cfg)
-
-    def step(self):
-        *_, done = self.update()
-
-        return done
 
     def set_dot(self, t):
         x = self.x.state

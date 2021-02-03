@@ -18,6 +18,11 @@ def posing(n, subsize, width, top, bottom, left, hspace):
     return figsize, poses
 
 
+def subplot(pos, index, **kwargs):
+    digit = int(str(len(pos)) + str(1) + str(index + 1))
+    return plt.subplot(digit, position=pos[index], **kwargs)
+
+
 def eigvals(data, internal=True):
     plt.fill_between(data.agent["t"],
                      data.agent["eigs"][:, -1],
@@ -81,11 +86,14 @@ def vector_by_index(data, key, index, mult=1, style=None):
     return plt.plot(data.env["t"], y, **style or data.style)
 
 
-def all(data, key, style=None):
+def all(data, key, style=None, is_agent=False):
+    style = style or data.style
+    if is_agent:
+        data = data.agent
+    else:
+        data = data.env
     return plt.plot(
-        data.env["t"],
-        data.env[key].reshape(data.env["t"].shape[0], -1),
-        **style or data.style)
+        data["t"], data[key].reshape(data["t"].shape[0], -1), **style)
 
 
 def matrix_by_index(data, key, index, style=None):
