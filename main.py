@@ -12,8 +12,14 @@ import matplotlib.pyplot as plt
 import plot
 import wingrock
 import multirotor
+import linear
 
 # np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
+plt.rc("font", family="Times New Roman")
+plt.rc("text", usetex=True)
+plt.rc("lines", linewidth=1)
+plt.rc("axes", grid=True)
+plt.rc("grid", linestyle="--", alpha=0.8)
 
 
 def run_simple(env):
@@ -57,7 +63,7 @@ def run_value_learner(env, agent):
         action = agent.get_action(obs)
         next_obs, reward, done = env.step(action)
 
-        agent.update(obs, next_obs, reward)
+        agent.update(obs)
 
         if done:
             break
@@ -387,6 +393,13 @@ def exp3():
     run_value_learner(
         wingrock.ValueLearnerEnv(), wingrock.ValueLearnerAgent())
 
+    wingrock.load_config()
+    cfg.dir = Path(basedir, "data01")
+    cfg.label = "Value Learner"
+    cfg.R = np.zeros((1, 1))
+    run_value_learner(
+        wingrock.ValueLearnerEnv(), wingrock.ValueLearnerAgent())
+
     # wingrock.load_config()
     # cfg.dir = Path(basedir, "data02")
     # cfg.label = "Double-MRAC"
@@ -493,6 +506,91 @@ def exp3_plot():
     plt.show()
 
 
+def exp4():
+    basedir = Path("data/exp4")
+
+    cfg = linear.cfg
+
+    linear.load_config()
+    cfg.dir = Path(basedir, "data00")
+    cfg.label = "Q Learner"
+    run_simple(linear.QLearnerEnv())
+
+
+def exp4_plot():
+    datadir = Path("data", "exp4")
+    qlearner = plot.get_data(Path(datadir, "data00"))
+    data = [qlearner]
+
+    basestyle = dict(c="k", lw=0.7)
+    refstyle = dict(basestyle, c="r", ls="--")
+    qlearner.style.update(basestyle, c="k", ls="-")
+
+    # Figure common setup
+    cfg = linear.cfg
+    linear.load_config()
+    t_range = (0, cfg.final_time)
+
+    # All in inches
+    subsize = (4.05, 0.946)
+    width = 4.94
+    top = 0.2
+    bottom = 0.671765
+    left = 0.5487688
+    hspace = 0.2716
+
+    # =================
+    # States and inputs
+    # =================
+    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [plot.vector_by_index(d, "x", 0)[0] for d in data]
+    plt.ylabel(r"$x_1$")
+    # plt.ylim(-2, 2)
+    plt.legend()
+
+    plot.subplot(pos, 1, sharex=ax)
+    [plot.vector_by_index(d, "x", 1) for d in data]
+    plt.ylabel(r"$x_2$")
+    # plt.ylim(-2, 2)
+
+    plot.subplot(pos, 2, sharex=ax)
+    [plot.vector_by_index(d, "u", 0) for d in data]
+    plt.ylabel(r'$u$')
+    # plt.ylim(-80, 80)
+
+    plt.xlabel("Time, sec")
+    plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    # ====================
+    # Parameter estimation
+    # ====================
+    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    plot.all(qlearner, "K", style=refstyle)
+    plot.all(qlearner, "Khat", style=dict(qlearner.style, c="k"))
+    plt.ylabel(r"$\hat{K}$")
+    # plt.ylim(-70, 30)
+
+    plot.subplot(pos, 1, sharex=ax)
+    plot.all(qlearner, "P", style=dict(qlearner.style, c="r", ls="--"))
+    plot.all(qlearner, "Phat", style=dict(qlearner.style, c="k"))
+    plt.ylabel(r"$\hat{P}$")
+    # plt.ylim(-70, 30)
+
+    plt.xlabel("Time, sec")
+    plt.xlim(t_range)
+
+    plt.show()
+
+
 def main():
     # exp1()
     # exp1_plot()
@@ -500,8 +598,11 @@ def main():
     # exp2()
     # exp2_plot()
 
-    exp3()
-    exp3_plot()
+    # exp3()
+    # exp3_plot()
+
+    exp4()
+    exp4_plot()
 
 
 if __name__ == "__main__":

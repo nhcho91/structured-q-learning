@@ -1,5 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from types import SimpleNamespace as SN
+import fym
+
+
+def get_data(datadir):
+    data = SN()
+    env, info = fym.logging.load(list(datadir.glob("*env.h5"))[0],
+                                 with_info=True)
+    data.env = env
+    data.info = info
+    agentlist = list(datadir.glob("*agent.h5"))
+    if agentlist != []:
+        data.agent = fym.logging.load(agentlist[0])
+    data.style = dict(label=info["cfg"].label)
+    return data
 
 
 def posing(n, subsize, width, top, bottom, left, hspace):

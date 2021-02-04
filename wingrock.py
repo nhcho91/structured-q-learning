@@ -14,7 +14,7 @@ cfg = SN()
 
 def load_config():
     cfg.dir = "data"
-    cfg.final_time = 50
+    cfg.final_time = 30
 
     cfg.Am = np.array([[0, 1, 0], [-15.8, -5.6, -17.3], [1, 0, 0]])
     cfg.B = np.array([[0, 1, 0]]).T
@@ -56,14 +56,14 @@ def load_config():
     cfg.ValueLearner = SN()
     cfg.ValueLearner.env_kwargs = dict(
         max_t=cfg.final_time,
-        solver="rk4", dt=0.1, ode_step_len=10)
-    cfg.ValueLearner.memory_size = 500
-    cfg.ValueLearner.mbatch_size = 32
-    # cfg.ValueLearner.learning_rate = 3.6e6
-    cfg.ValueLearner.learning_rate = 3.7e7
-    cfg.ValueLearner.decaying_rate = 1/30
-    cfg.ValueLearner.EPS = 1e-8
+        solver="rk4", dt=1e-3)
     cfg.ValueLearner.switching_time = 30
+    cfg.ValueLearner.Gamma = 1e2
+    cfg.ValueLearner.kL = 0.1
+    cfg.ValueLearner.kU = 10
+    cfg.ValueLearner.theta = 0.1
+    cfg.ValueLearner.tauf = 1e-3
+    cfg.ValueLearner.threshold = 1e-10
 
     # Double MRAC
     cfg.DoubleMRAC = SN()
@@ -142,23 +142,6 @@ class Command():
         else:
             c = 0
         return np.atleast_2d(c)
-
-
-# class Command(BaseSystem):
-#     def __init__(self):
-#         super().__init__(np.vstack((1, 0)))
-
-#         self.A = np.array([
-#             [0, 0.1],
-#             [-1, 0],
-#         ])
-#         self.C = np.array([[1, 0]])
-
-#     def set_dot(self, x):
-#         self.dot = self.A.dot(x)
-
-#     def get(self, x):
-#         return self.C.dot(x)
 
 
 class CMRAC(BaseSystem):
@@ -253,59 +236,103 @@ class MRACEnv(BaseEnv):
 
 class ValueLearnerAgent():
     def __init__(self):
-        self.memory = deque(maxlen=cfg.ValueLearner.memory_size)
-        self.N = cfg.ValueLearner.mbatch_size
-        self.lr0 = cfg.ValueLearner.learning_rate
-        self.dr = cfg.ValueLearner.decaying_rate
-
+        n, m = cfg.Winit.shape
+        self.F = np.zeros((n, n))
+        self.G = np.zeros((n, m))
         self.What = np.zeros_like(cfg.Wcirc)
+
+        self.best_F = self.F.copy()
+        self.best_G = self.G.copy()
 
         self.logger = fym.logging.Logger(
             Path(cfg.dir, "value-learner-agent.h5"))
         self.logger.set_info(cfg=cfg)
 
     def get_action(self, obs):
+        F, _ = self.best_F, self.best_G
+
         t, *_ = obs
+        eigs, _ = self.get_eig(F, cfg.ValueLearner.threshold)
+        self.logger.record(
+            t=t,
+            eigs=cfg.ValueLearner.Gamma * eigs,
+            What=self.What
+        )
+
+        return self.What
+
+    def update(self, obs):
+        t, y, xi, phi = obs
+
+        if t >= cfg.ValueLearner.switching_time:
+            return
+
         What = self.What
-        self.logger.record(t=t, What=What)
-        return What
 
-    def update(self, obs, next_obs, reward):
-        t, *_ = obs
-        self.lr = np.exp(-self.dr * t) * self.lr0
+        p, q = self._get_pq(obs)
 
-        if t < cfg.ValueLearner.switching_time:
-            if reward > cfg.ValueLearner.EPS:
-                self.memory.append([obs, next_obs, reward])
-            if len(self.memory) >= self.N:
-                self.train()
+        self.F = q * self.F + p * xi.dot(xi.T)
+        self.G = q * self.G + p * xi.dot(y.T)
+
+        if self.get_eig(self.F)[0][0] > self.get_eig(self.best_F)[0][0]:
+            self.best_F = self.F
+            self.best_G = self.G
+
+        FWtilde = self.best_F.dot(What) - self.best_G
+        dt = cfg.ValueLearner.env_kwargs["dt"]
+        self.What = What - cfg.ValueLearner.Gamma * dt * FWtilde
 
     def close(self):
         self.logger.close()
 
-    def get_value(self, e, W):
-        What = self.What
-        return 1/2 * (
-            e.T.dot(cfg.P).dot(e)
-            + np.trace((W - What).T.dot(1/cfg.Gamma1).dot(W - What))
+    def _get_pq(self, obs):
+        t, y, xi, phi = obs
+
+        p = cfg.ValueLearner.env_kwargs["dt"]
+        xidot = - (xi - phi) / cfg.ValueLearner.tauf
+        nxidot = np.linalg.norm(xidot)
+        k = self._get_k(nxidot)
+        q = 1 - k * p
+
+        return p, q
+
+    def _get_k(self, nxidot):
+        return (cfg.ValueLearner.kL
+                + ((cfg.ValueLearner.kU - cfg.ValueLearner.kL)
+                   * np.tanh(cfg.ValueLearner.theta * nxidot)))
+
+    def get_eig(self, A, threshold=1e-10):
+        eigs, eigv = np.linalg.eig(A)
+        sort = np.argsort(np.real(eigs))  # sort in ascending order
+        eigs = np.real(eigs[sort])
+        eigv = np.real(eigv[:, sort])
+        eigs[eigs < threshold] = 0
+        return eigs, eigv
+
+
+class ResidualFilter(BaseEnv):
+    def __init__(self, basis, B):
+        super().__init__()
+        n, m = cfg.Winit.shape
+        self.xi = BaseSystem(shape=(n, 1))
+        self.z = BaseSystem(shape=(m, 1))
+
+        self.Bdagger = np.linalg.pinv(B)
+        self.tauf = cfg.ValueLearner.tauf
+
+    def set_dot(self, e, phi, u):
+        xi = self.xi.state
+        z = self.z.state
+
+        self.xi.dot = -1 / self.tauf * (xi - phi)
+        self.z.dot = (
+            1 / self.tauf * (self.Bdagger.dot(e) - z)
+            + self.Bdagger.dot(cfg.Am).dot(e)
+            + u
         )
 
-    def train(self):
-        minibatch = random.sample(self.memory, self.N)
-
-        gradsum = 0
-        for data in minibatch:
-            state, next_state, reward = data
-            _, e, W = state
-            _, next_e, next_W = next_state
-
-            V = self.get_value(e, W)
-            V_next = self.get_value(next_e, next_W)
-            error = V_next - V + reward
-            grad_error = (1/cfg.Gamma1) * (W - next_W)
-            gradsum += error * grad_error
-
-        self.What = self.What - self.lr * gradsum / self.N
+    def get_y(self, e, z):
+        return 1 / self.tauf * (self.Bdagger.dot(e) - z)
 
 
 class ValueLearnerEnv(MRACEnv, BaseEnv):
@@ -313,17 +340,22 @@ class ValueLearnerEnv(MRACEnv, BaseEnv):
         BaseEnv.__init__(self, **cfg.ValueLearner.env_kwargs)
         self.x = System()
         self.xr = ReferenceSystem()
+
         self.P = cfg.P
         self.W = CMRAC(self.P, cfg.B)
+
         self.F = BaseSystem(np.zeros_like(cfg.Wcirc.dot(cfg.Wcirc.T)))
         self.J = PerformanceIndex()
-        self.cmd = Command()
 
         self.basis = self.x.unc.basis
+        self.filter = ResidualFilter(basis=self.basis, B=cfg.B)
+
+        self.cmd = Command()
 
         self.BTBinv = np.linalg.inv(cfg.B.T.dot(cfg.B))
 
-        self.logger = fym.logging.Logger(Path(cfg.dir, "value-learner-env.h5"))
+        self.logger = fym.logging.Logger(
+            Path(cfg.dir, "value-learner-env.h5"))
         self.logger.set_info(cfg=cfg)
 
     def step(self, action):
@@ -339,9 +371,12 @@ class ValueLearnerEnv(MRACEnv, BaseEnv):
 
     def observation(self):
         t = self.clock.get()
-        x, xr, W, F, J = self.observe_list()
+        x, xr, W, F, J, (xi, z) = self.observe_list()
         e = x - xr
-        return t, e, W
+        y = self.filter.get_y(e, z)
+        c = self.cmd.get(t)
+        phi = self.basis(x, xr, c)
+        return t, y, xi, phi
 
     def set_dot(self, t, What):
         x = self.x.state
@@ -355,7 +390,7 @@ class ValueLearnerEnv(MRACEnv, BaseEnv):
         e = x - xr
         u = self.get_input(e, W, phi)
 
-        if t > 40:
+        if t > cfg.ValueLearner.switching_time:
             Wtilde = W - What
             composite_term = - cfg.Gamma1 * F.dot(Wtilde)
             Fdot = cfg.DoubleMRAC.GammaF * Wtilde.dot(Wtilde.T)
@@ -366,11 +401,12 @@ class ValueLearnerEnv(MRACEnv, BaseEnv):
         self.x.set_dot(t, u, c)
         self.xr.set_dot(c)
         self.W.set_dot(e, phi, composite_term)
-        self.J.set_dot(e, u)
         self.F.dot = Fdot
+        self.J.set_dot(e, u)
+        self.filter.set_dot(e, phi, u)
 
     def logger_callback(self, i, t, y, t_hist, ode_hist):
-        x, xr, W, F, J = self.observe_list(y)
+        x, xr, W, F, J, (xi, z) = self.observe_list(y)
         c = self.cmd.get(t)
         phi = self.basis(x, xr, c)
 
@@ -381,7 +417,7 @@ class ValueLearnerEnv(MRACEnv, BaseEnv):
 
         e_HJB = self.get_HJB_error(t, x, xr, W, c)
 
-        return dict(t=t, x=x, xr=xr, W=W, F=F, J=J,
+        return dict(t=t, x=x, xr=xr, W=W, F=F, J=J, xi=xi, z=z,
                     e=e, c=c, Wcirc=Wcirc, u=u, e_HJB=e_HJB)
 
 
