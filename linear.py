@@ -33,8 +33,8 @@ def load_config():
     )
     cfg.QLearner.Khat_init = np.zeros_like(cfg.K)
     cfg.QLearner.Phat_init = np.zeros_like(cfg.P)
-    cfg.QLearner.Khat_gamma = 3e1
-    cfg.QLearner.Phat_gamma = 3e3
+    cfg.QLearner.Khat_gamma = 4e1
+    cfg.QLearner.Phat_gamma = 4e3
 
 
 class LinearSystem(BaseSystem):
