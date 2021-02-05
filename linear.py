@@ -4,6 +4,7 @@ from types import SimpleNamespace as SN
 from pathlib import Path
 from collections import deque
 import random
+import logging
 
 
 import fym
@@ -35,8 +36,8 @@ def load_config():
     )
     cfg.QLearner.Khat_init = np.zeros_like(cfg.K)
     cfg.QLearner.Phat_init = np.zeros_like(cfg.P)
-    cfg.QLearner.Khat_gamma = 1e-1
-    cfg.QLearner.Phat_gamma = 1e-1
+    cfg.QLearner.Khat_gamma = 1e-2
+    cfg.QLearner.Phat_gamma = 1e-2
     cfg.QLearner.memory_len = 10000
     cfg.QLearner.batch_size = 128
     cfg.QLearner.train_epoch = 100
@@ -76,9 +77,9 @@ class QLearnerAgent():
         self.memory.append((x, u, xdot))
 
         if len(self.memory) >= self.memory.maxlen:
-            self.train()
+            self.train(t)
 
-    def train(self):
+    def train(self, t):
         for i in range(cfg.QLearner.train_epoch):
             Phat = self.Phat
             Khat = self.Khat
@@ -106,8 +107,14 @@ class QLearnerAgent():
 
                 loss += 0.5 * e**2
 
-            self.Phat = Phat - self.gP * e * gradP / self.N
-            self.Khat = Khat - self.gK * e * gradK / self.N
+            logging.debug(
+                f"Time {t:5.2f}/{cfg.final_time:5.2f} | "
+                f"Epoch {i+1:03d}/{cfg.QLearner.train_epoch:03d} | "
+                f"Loss: {loss:07.4f}")
+
+            factor = 1 - i / cfg.QLearner.train_epoch
+            self.Phat = Phat - factor * self.gP * e * gradP / self.N
+            self.Khat = Khat - factor * self.gK * e * gradK / self.N
 
     def close(self):
         self.logger.close()

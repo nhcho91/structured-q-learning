@@ -13,6 +13,7 @@ import plot
 import wingrock
 import multirotor
 import linear
+import logs
 
 # np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
 plt.rc("font", family="Times New Roman")
@@ -508,6 +509,8 @@ def exp3_plot():
 
 def exp4():
     basedir = Path("data/exp4")
+
+    logs.set_logger(basedir, "train.log")
 
     cfg = linear.cfg
 
