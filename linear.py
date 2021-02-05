@@ -2,6 +2,8 @@ import numpy as np
 import scipy
 from types import SimpleNamespace as SN
 from pathlib import Path
+from collections import deque
+import random
 
 
 import fym
@@ -33,8 +35,11 @@ def load_config():
     )
     cfg.QLearner.Khat_init = np.zeros_like(cfg.K)
     cfg.QLearner.Phat_init = np.zeros_like(cfg.P)
-    cfg.QLearner.Khat_gamma = 4e1
-    cfg.QLearner.Phat_gamma = 4e3
+    cfg.QLearner.Khat_gamma = 1e-1
+    cfg.QLearner.Phat_gamma = 1e-1
+    cfg.QLearner.memory_len = 10000
+    cfg.QLearner.batch_size = 128
+    cfg.QLearner.train_epoch = 100
 
 
 class LinearSystem(BaseSystem):
@@ -49,6 +54,65 @@ class LinearSystem(BaseSystem):
         self.dot = self.deriv(t, x, u)
 
 
+class QLearnerAgent():
+    def __init__(self):
+        self.memory = deque(maxlen=cfg.QLearner.memory_len)
+        self.Phat = cfg.QLearner.Phat_init
+        self.Khat = cfg.QLearner.Khat_init
+
+        self.gK = cfg.QLearner.Khat_gamma
+        self.gP = cfg.QLearner.Phat_gamma
+        self.N = cfg.QLearner.batch_size
+
+        self.logger = fym.logging.Logger(
+            Path(cfg.dir, "qlearner-agent.h5"))
+        self.logger.set_info(cfg=cfg)
+
+    def get_action(self, obs):
+        return None
+
+    def update(self, obs, action, next_obs, reward, done):
+        t, x, u, xdot = obs
+        self.memory.append((x, u, xdot))
+
+        if len(self.memory) >= self.memory.maxlen:
+            self.train()
+
+    def train(self):
+        for i in range(cfg.QLearner.train_epoch):
+            Phat = self.Phat
+            Khat = self.Khat
+
+            gradP, gradK = 0, 0
+            loss = 0
+            batch = random.sample(self.memory, self.N)
+            for b in batch:
+                x, u, xdot = b
+
+                e = np.sum([
+                    x.T.dot(Phat).dot(xdot),
+                    -u.T.dot(cfg.R).dot(Khat).dot(x),
+                    -0.5 * x.T.dot(Khat.T).dot(cfg.R).dot(Khat).dot(x),
+                    0.5 * x.T.dot(cfg.Q).dot(x)
+                ])
+                gradP_e = 0.5 * x.dot(xdot.T) + 0.5 * xdot.dot(x.T)
+                gradK_e = cfg.R.dot(
+                    u.dot(xdot.T)
+                    - 0.5 * (u + Khat.dot(x + 2*xdot)).dot(x.T)
+                )
+
+                gradP = gradP + e * gradP_e
+                gradK = gradK + e * gradK_e
+
+                loss += 0.5 * e**2
+
+            self.Phat = Phat - self.gP * e * gradP / self.N
+            self.Khat = Khat - self.gK * e * gradK / self.N
+
+    def close(self):
+        self.logger.close()
+
+
 class QLearnerEnv(BaseEnv):
     def __init__(self):
         super().__init__(**cfg.QLearner.env_kwargs)
@@ -58,14 +122,27 @@ class QLearnerEnv(BaseEnv):
         self.gK = cfg.QLearner.Khat_gamma
         self.gP = cfg.QLearner.Phat_gamma
 
-        self.logger = fym.logging.Logger(Path(cfg.dir, "mrac-env.h5"))
+        self.logger = fym.logging.Logger(Path(cfg.dir, "qlearner-env.h5"))
         self.logger.set_info(cfg=cfg)
 
-    def step(self):
-        *_, done = self.update()
-        return done
+    def step(self, action):
+        *_, done = self.update(action=action)
+        next_obs = self.observation()
+        return next_obs, None, done
 
-    def set_dot(self, t):
+    def reset(self):
+        super().reset()
+        return self.observation()
+
+    def observation(self):
+        t = self.clock.get()
+        x, Khat, Phat = self.observe_list()
+
+        u = self.get_input(t, x)
+        xdot = self.x.deriv(t, x, u)
+        return t, x, u, xdot
+
+    def set_dot(self, t, action):
         x, Khat, Phat = self.observe_list()
 
         u = self.get_input(t, x)

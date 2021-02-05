@@ -54,7 +54,7 @@ def run_agent(env, agent):
     agent.close()
 
 
-def run_value_learner(env, agent):
+def run_with_agent(env, agent):
     obs = env.reset()
 
     while True:
@@ -63,7 +63,7 @@ def run_value_learner(env, agent):
         action = agent.get_action(obs)
         next_obs, reward, done = env.step(action)
 
-        agent.update(obs)
+        agent.update(obs, action, next_obs, reward, done)
 
         if done:
             break
@@ -390,14 +390,14 @@ def exp3():
     cfg.dir = Path(basedir, "data01")
     cfg.label = "Value Learner"
     cfg.R = np.zeros((1, 1))
-    run_value_learner(
+    run_with_agent(
         wingrock.ValueLearnerEnv(), wingrock.ValueLearnerAgent())
 
     wingrock.load_config()
     cfg.dir = Path(basedir, "data01")
     cfg.label = "Value Learner"
     cfg.R = np.zeros((1, 1))
-    run_value_learner(
+    run_with_agent(
         wingrock.ValueLearnerEnv(), wingrock.ValueLearnerAgent())
 
     # wingrock.load_config()
@@ -514,7 +514,7 @@ def exp4():
     linear.load_config()
     cfg.dir = Path(basedir, "data00")
     cfg.label = "Q Learner"
-    run_simple(linear.QLearnerEnv())
+    run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
 
 def exp4_plot():
