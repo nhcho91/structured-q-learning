@@ -578,13 +578,13 @@ def exp4_plot():
 
     ax = plot.subplot(pos, 0)
     plot.all(qlearner, "K", style=refstyle)
-    plot.all(qlearner, "Khat", style=dict(qlearner.style, c="k"))
+    plot.all(qlearner, "Khat", is_agent=True, style=dict(qlearner.style, c="k"))
     plt.ylabel(r"$\hat{K}$")
     # plt.ylim(-70, 30)
 
     plot.subplot(pos, 1, sharex=ax)
     plot.all(qlearner, "P", style=dict(qlearner.style, c="r", ls="--"))
-    plot.all(qlearner, "Phat", style=dict(qlearner.style, c="k"))
+    plot.all(qlearner, "Phat", is_agent=True, style=dict(qlearner.style, c="k"))
     plt.ylabel(r"$\hat{P}$")
     # plt.ylim(-70, 30)
 

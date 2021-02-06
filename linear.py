@@ -36,11 +36,11 @@ def load_config():
     )
     cfg.QLearner.Khat_init = np.zeros_like(cfg.K)
     cfg.QLearner.Phat_init = np.zeros_like(cfg.P)
-    cfg.QLearner.Khat_gamma = 1e-2
+    cfg.QLearner.Khat_gamma = 1e-3
     cfg.QLearner.Phat_gamma = 1e-2
     cfg.QLearner.memory_len = 10000
-    cfg.QLearner.batch_size = 128
-    cfg.QLearner.train_epoch = 100
+    cfg.QLearner.batch_size = 1
+    cfg.QLearner.train_epoch = 1000
 
 
 class LinearSystem(BaseSystem):
@@ -65,19 +65,25 @@ class QLearnerAgent():
         self.gP = cfg.QLearner.Phat_gamma
         self.N = cfg.QLearner.batch_size
 
+        self.train_time = 0
+
         self.logger = fym.logging.Logger(
-            Path(cfg.dir, "qlearner-agent.h5"))
+            Path(cfg.dir, "qlearner-agent.h5"), max_len=1)
         self.logger.set_info(cfg=cfg)
 
     def get_action(self, obs):
-        return None
+        t, *_ = obs
+        Phat, Khat = self.Phat, self.Khat
+        self.logger.record(t=t, Phat=Phat, Khat=Khat)
+        return self.Phat, self.Khat
 
     def update(self, obs, action, next_obs, reward, done):
         t, x, u, xdot = obs
         self.memory.append((x, u, xdot))
 
         if len(self.memory) >= self.memory.maxlen:
-            self.train(t)
+            if t - self.train_time > 3:
+                self.train(t)
 
     def train(self, t):
         for i in range(cfg.QLearner.train_epoch):
@@ -96,11 +102,9 @@ class QLearnerAgent():
                     -0.5 * x.T.dot(Khat.T).dot(cfg.R).dot(Khat).dot(x),
                     0.5 * x.T.dot(cfg.Q).dot(x)
                 ])
+
                 gradP_e = 0.5 * x.dot(xdot.T) + 0.5 * xdot.dot(x.T)
-                gradK_e = cfg.R.dot(
-                    u.dot(xdot.T)
-                    - 0.5 * (u + Khat.dot(x + 2*xdot)).dot(x.T)
-                )
+                gradK_e = - cfg.R.dot(u + Khat.dot(x)).dot(x.T)
 
                 gradP = gradP + e * gradP_e
                 gradK = gradK + e * gradK_e
@@ -108,13 +112,25 @@ class QLearnerAgent():
                 loss += 0.5 * e**2
 
             logging.debug(
-                f"Time {t:5.2f}/{cfg.final_time:5.2f} | "
-                f"Epoch {i+1:03d}/{cfg.QLearner.train_epoch:03d} | "
+                f"Time: {t:5.2f}/{cfg.final_time:5.2f} | "
+                f"Epoch: {i+1:03d}/{cfg.QLearner.train_epoch:03d} | "
                 f"Loss: {loss:07.4f}")
 
-            factor = 1 - i / cfg.QLearner.train_epoch
+            # factor = 1 - i / cfg.QLearner.train_epoch
+            factor = 1
             self.Phat = Phat - factor * self.gP * e * gradP / self.N
             self.Khat = Khat - factor * self.gK * e * gradK / self.N
+
+        P_loss = ((cfg.P - self.Phat)**2).sum()
+        K_loss = ((cfg.K - self.Khat)**2).sum()
+
+        logging.info(
+            f"[Finished] Time: {t:5.2f} | "
+            f"P Loss: {P_loss:07.4f}  |"
+            f"K Loss: {K_loss:07.4f}"
+        )
+
+        self.train_time = t
 
     def close(self):
         self.logger.close()
@@ -124,10 +140,6 @@ class QLearnerEnv(BaseEnv):
     def __init__(self):
         super().__init__(**cfg.QLearner.env_kwargs)
         self.x = LinearSystem()
-        self.Khat = BaseSystem(cfg.QLearner.Khat_init)
-        self.Phat = BaseSystem(cfg.QLearner.Phat_init)
-        self.gK = cfg.QLearner.Khat_gamma
-        self.gP = cfg.QLearner.Phat_gamma
 
         self.logger = fym.logging.Logger(Path(cfg.dir, "qlearner-env.h5"))
         self.logger.set_info(cfg=cfg)
@@ -143,43 +155,15 @@ class QLearnerEnv(BaseEnv):
 
     def observation(self):
         t = self.clock.get()
-        x, Khat, Phat = self.observe_list()
-
+        x = self.x.state
         u = self.get_input(t, x)
         xdot = self.x.deriv(t, x, u)
         return t, x, u, xdot
 
     def set_dot(self, t, action):
-        x, Khat, Phat = self.observe_list()
-
+        x = self.x.state
         u = self.get_input(t, x)
-        xdot = self.x.deriv(t, x, u)
-        udot = -0.5 * u - 0.5 * cfg.K.dot(x + 2 * xdot)
-
-        gradxV = Phat.dot(x) + Khat.T.dot(cfg.R).dot(u + Khat.dot(x))
-        graduV = cfg.R.dot(u + Khat.dot(x))
-
-        e = np.sum([
-            gradxV.T.dot(xdot),
-            graduV.T.dot(udot),
-            0.5 * x.T.dot(cfg.Q).dot(x),
-            0.5 * u.T.dot(cfg.R).dot(u)
-        ])
-
-        if e > 0:
-            e = 0
-
         self.x.set_dot(t, u)
-        self.Khat.dot = -self.gK * e * cfg.R.dot(
-            Khat.dot(x).dot(xdot.T)
-            + Khat.dot(xdot).dot(x.T)
-            + u.dot(xdot.T)
-            + udot.dot(x.T)
-        )
-        self.Phat.dot = -self.gP * e * 0.5 * (
-            x.dot(xdot.T)
-            + xdot.dot(x.T)
-        )
 
     def get_input(self, t, x):
         un = - cfg.K.dot(x)
@@ -192,7 +176,7 @@ class QLearnerEnv(BaseEnv):
 
     def logger_callback(self, i, t, y, t_hist, ode_hist):
         states = self.observe_dict(y)
-        x, Khat, Phat = self.observe_list(y)
+        x = states["x"]
         u = self.get_input(t, x)
 
         return dict(t=t, u=u, K=cfg.K, P=cfg.P, **states)
