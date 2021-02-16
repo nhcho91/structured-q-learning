@@ -101,15 +101,20 @@ def vector_by_index(data, key, index, mult=1, style=None):
     return plt.plot(data.env["t"], y, **style or data.style)
 
 
-def all(data, key, style=None, is_agent=False):
-    style = style or data.style
+def all(data, key, style=dict(), is_agent=False):
+    style = dict(data.style, **style)
     if is_agent:
         data = data.agent
     else:
         data = data.env
-    return plt.plot(
+    lines = plt.plot(
         data["t"], data[key].reshape(data["t"].shape[0], -1), **style)
+    plt.setp(lines[1:], label=None)
+    return lines
 
 
 def matrix_by_index(data, key, index, style=None):
-    return plt.plot(data.env["t"], data.env[key][:, index, index], **style or data.style)
+    style = dict(data.style, **style)
+    lines = plt.plot(data.env["t"], data.env[key][:, index, index], **style)
+    plt.setp(lines[1:], label=None)
+    return lines
