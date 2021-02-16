@@ -527,16 +527,14 @@ def exp4():
     linear.load_config()
     cfg.dir = Path(basedir, "data02")
     cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
-    # cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
-    cfg.A = np.array([[2, 1, 0], [0, 1, 0], [1, 0, 3]])
+    cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
     linear.calc_config()
     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
     linear.load_config()
     cfg.dir = Path(basedir, "data03")
     cfg.label = "Q Learner (Init. Non-Admm.)"
-    # cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
-    cfg.A = np.array([[2, 1, 0], [0, 1, 0], [1, 0, 3]])
+    cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
     linear.calc_config()
     run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
