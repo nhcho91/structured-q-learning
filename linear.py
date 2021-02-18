@@ -17,14 +17,18 @@ cfg = SN()
 
 def load_config():
     cfg.dir = "data"
-    cfg.final_time = 20
+    cfg.final_time = 40
 
     # cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
-    cfg.A = np.array([[0, 1, 0], [0, -2, -1], [1, 0, -1]])
+    cfg.A = np.array([[-2, 1, 0], [0, -2, -1], [0.5, 0, -1]])
     # cfg.A = np.array([[2, 1, 0], [0, 1, 0], [1, 0, 3]])
-    cfg.B = np.array([[0, 1, 0]]).T
+    cfg.B = np.array([
+        [0, 0],
+        [1, 0],
+        [0, 1],
+    ])
     cfg.Q = np.diag([1, 10, 10])
-    cfg.R = np.diag([10])
+    cfg.R = np.diag([10, 1])
 
     cfg.x_init = np.vstack((0.3, 0, 0))
 
@@ -48,6 +52,9 @@ def calc_config():
     cfg.QLearner.W1_init = np.zeros_like(cfg.P)
     cfg.QLearner.W2_init = np.zeros_like(cfg.K)
     cfg.QLearner.W3_init = np.zeros_like(cfg.R)
+
+    K = cfg.QLearner.K_init
+    print(np.linalg.eigvals(cfg.A - K.T.dot(cfg.R).dot(K)))
 
 
 class LinearSystem(BaseSystem):
@@ -274,7 +281,7 @@ class ZLearnerAgent():
             loss = ((Y - Phi.dot(w))**2).sum()
             error = ((next_K - K)**2).sum()
 
-            logging.debug(
+            logging.info(
                 f"Time: {t:5.2f}/{cfg.final_time:5.2f} | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "
@@ -340,7 +347,7 @@ class QLearnerEnv(BaseEnv):
 
     def get_input(self, t, x):
         un = - cfg.K.dot(x)
-        noise = np.sum([
+        noise = np.vstack([
             0.3 * np.sin(t) * np.cos(np.pi * t),
             0.5 * np.sin(0.2 * t + 1)
         ])

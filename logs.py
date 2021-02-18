@@ -21,7 +21,9 @@ def set_logger(path, file):
     file_logging_format = "%(levelname)s: %(asctime)s: %(message)s"
 
     # configure logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
     logging.basicConfig(
         filename=log_file,
-        level=logging.DEBUG,
+        level=logging.INFO,
         format=file_logging_format)

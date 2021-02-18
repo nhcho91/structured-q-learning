@@ -15,7 +15,7 @@ import multirotor
 import linear
 import logs
 
-# np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
+np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
 plt.rc("font", family="Times New Roman")
 plt.rc("text", usetex=True)
 plt.rc("lines", linewidth=1)
@@ -527,14 +527,14 @@ def exp4():
     linear.load_config()
     cfg.dir = Path(basedir, "data02")
     cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
-    cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
+    cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
     linear.calc_config()
     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
     linear.load_config()
     cfg.dir = Path(basedir, "data03")
     cfg.label = "Q Learner (Init. Non-Admm.)"
-    cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
+    cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
     linear.calc_config()
     run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
@@ -699,7 +699,7 @@ def main():
     # exp3()
     # exp3_plot()
 
-    exp4()
+    # exp4()
     exp4_plot()
 
 
