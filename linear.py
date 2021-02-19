@@ -27,8 +27,18 @@ def load_config():
         [1, 0],
         [0, 1],
     ])
-    cfg.Q = np.diag([1, 10, 10])
-    cfg.R = np.diag([10, 1])
+    Fp = np.array([[-1, 1], [0, 1]])
+    Kf, *_ = LQR.clqr(Fp, np.eye((2)), np.eye(2), np.eye(2))
+    cfg.F = Fp - Kf
+    cfg.Q = np.array([
+        [1, 0, 0],
+        [0, 10, 0],
+        [0, 0, 10]
+    ])
+    cfg.R = np.array([
+        [1, 0],
+        [0, 10]
+    ])
 
     cfg.x_init = np.vstack((0.3, 0, 0))
 
@@ -127,15 +137,10 @@ class QLearnerAgent():
                 #     + lxu
                 # )
 
+                udot = cfg.F.dot(u + K.dot(x)) - K.dot(xdot)
                 phi1 = 0.5 * np.kron(x, xdot) + 0.5 * np.kron(xdot, x)
-                phi2 = (
-                    np.kron(xdot, u)
-                    - 0.5 * np.kron(x, u + K.dot(x + 2 * xdot))
-                )
-                phi3 = -1/4 * (
-                    np.kron(u, u + K.dot(x + 2 * xdot))
-                    + np.kron(u + K.dot(x + 2 * xdot), u)
-                )
+                phi2 = np.kron(xdot, u) + np.kron(x, udot)
+                phi3 = 0.5 * (np.kron(u, udot) + np.kron(udot, u))
                 phi = np.vstack((phi1, phi2, phi3))
 
                 y = - lxu
@@ -174,10 +179,10 @@ class QLearnerAgent():
             # Policy Improvement
             K = next_K
 
-        P = W1 - K.T.dot(cfg.R).dot(K)
+        P = W1 - K.T.dot(W3).dot(K)
         P_loss = ((cfg.P - P)**2).sum()
         K_loss = ((cfg.K - K)**2).sum()
-        R_loss = ((cfg.R - W3)**2).sum()
+        R_loss = ((cfg.R + cfg.F.T.dot(W3) + W3.dot(cfg.F))**2).sum()
 
         logging.info(
             f"[Finished] Time: {t:5.2f} | "

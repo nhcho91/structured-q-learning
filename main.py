@@ -514,15 +514,15 @@ def exp4():
 
     cfg = linear.cfg
 
-    # linear.load_config()
-    # cfg.dir = Path(basedir, "data00")
-    # cfg.label = "Z. P. Jiang (Init. Admm.)"
-    # run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+    linear.load_config()
+    cfg.dir = Path(basedir, "data00")
+    cfg.label = "Z. P. Jiang (Init. Admm.)"
+    run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
-    # linear.load_config()
-    # cfg.dir = Path(basedir, "data01")
-    # cfg.label = "Q Learner (Init. Admm.)"
-    # run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
+    linear.load_config()
+    cfg.dir = Path(basedir, "data01")
+    cfg.label = "Q Learner (Init. Admm.)"
+    run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
     linear.load_config()
     cfg.dir = Path(basedir, "data02")
@@ -699,7 +699,7 @@ def main():
     # exp3()
     # exp3_plot()
 
-    # exp4()
+    exp4()
     exp4_plot()
 
 
