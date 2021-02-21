@@ -20,25 +20,19 @@ def load_config():
     cfg.final_time = 40
 
     # cfg.A = np.array([[0, 1, 0], [0, 0, 0], [1, 0, 0]])
-    cfg.A = np.array([[-2, 1, 0], [0, -2, -1], [0.5, 0, -1]])
+    cfg.A = np.array([[0, 1, 0], [0, -2, -1], [1, 0, -1]])
     # cfg.A = np.array([[2, 1, 0], [0, 1, 0], [1, 0, 3]])
     cfg.B = np.array([
-        [0, 0],
-        [1, 0],
         [0, 1],
-    ])
-    Fp = np.array([[-1, 1], [0, 1]])
-    Kf, *_ = LQR.clqr(Fp, np.eye((2)), np.eye(2), np.eye(2))
-    cfg.F = Fp - Kf
-    cfg.Q = np.array([
-        [1, 0, 0],
-        [0, 10, 0],
-        [0, 0, 10]
-    ])
-    cfg.R = np.array([
         [1, 0],
-        [0, 10]
+        [0, 0],
     ])
+    m = cfg.B.shape[1]
+    Fp = np.array([[-1, 1], [0, 1]])
+    Kf, *_ = LQR.clqr(Fp, np.eye((m)), np.eye(m), np.eye(m))
+    cfg.F = Fp - Kf
+    cfg.Q = np.diag([1, 10, 10])
+    cfg.R = np.diag([1, 1])
 
     cfg.x_init = np.vstack((0.3, 0, 0))
 
@@ -258,7 +252,7 @@ class ZLearnerAgent():
 
                 lxu = 0.5 * (x.T.dot(cfg.Q + K.T.dot(cfg.R).dot(K)).dot(x))
 
-                phi1 = 0.5 * np.kron(x, xdot) + 0.5 * np.kron(xdot, x)
+                phi1 = np.kron(xdot, x)
                 phi2 = - np.kron(cfg.R.dot(u + K.dot(x)), x)
                 phi = np.vstack((phi1, phi2))
 
@@ -286,7 +280,7 @@ class ZLearnerAgent():
             loss = ((Y - Phi.dot(w))**2).sum()
             error = ((next_K - K)**2).sum()
 
-            logging.info(
+            logging.debug(
                 f"Time: {t:5.2f}/{cfg.final_time:5.2f} | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "

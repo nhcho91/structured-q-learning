@@ -514,22 +514,22 @@ def exp4():
 
     cfg = linear.cfg
 
-    linear.load_config()
-    cfg.dir = Path(basedir, "data00")
-    cfg.label = "Z. P. Jiang (Init. Admm.)"
-    run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+#     linear.load_config()
+#     cfg.dir = Path(basedir, "data00")
+#     cfg.label = "Z. P. Jiang (Init. Admm.)"
+#     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
-    linear.load_config()
-    cfg.dir = Path(basedir, "data01")
-    cfg.label = "Q Learner (Init. Admm.)"
-    run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
+#     linear.load_config()
+#     cfg.dir = Path(basedir, "data01")
+#     cfg.label = "Q Learner (Init. Admm.)"
+#     run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
-    linear.load_config()
-    cfg.dir = Path(basedir, "data02")
-    cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
-    cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
-    linear.calc_config()
-    run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+#     linear.load_config()
+#     cfg.dir = Path(basedir, "data02")
+#     cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
+#     cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
+#     linear.calc_config()
+#     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
     linear.load_config()
     cfg.dir = Path(basedir, "data03")
