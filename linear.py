@@ -1,5 +1,5 @@
 import numpy as np
-import scipy
+import scipy as sp
 from types import SimpleNamespace as SN
 from pathlib import Path
 from collections import deque
@@ -13,6 +13,7 @@ from fym.core import BaseEnv, BaseSystem
 
 
 cfg = SN()
+logger = logging.getLogger("logs")
 
 
 def load_config():
@@ -31,8 +32,10 @@ def load_config():
     Fp = np.array([[-1, 1], [0, 1]])
     Kf, *_ = LQR.clqr(Fp, np.eye((m)), np.eye(m), np.eye(m))
     cfg.F = Fp - Kf
+    # cfg.F = -1 * np.eye(2)
+    # cfg.F = -1 * np.eye(1)
     cfg.Q = np.diag([1, 10, 10])
-    cfg.R = np.diag([1, 1])
+    cfg.R = np.diag([1, 10])
 
     cfg.x_init = np.vstack((0.3, 0, 0))
 
@@ -43,7 +46,7 @@ def load_config():
         solver="rk4", dt=0.001,
     )
     cfg.QLearner.memory_len = 10000
-    cfg.QLearner.batch_size = 100
+    cfg.QLearner.batch_size = 400
     cfg.QLearner.train_epoch = 10
 
     calc_config()
@@ -52,13 +55,13 @@ def load_config():
 def calc_config():
     cfg.K, cfg.P, *_ = LQR.clqr(cfg.A, cfg.B, cfg.Q, cfg.R)
 
-    cfg.QLearner.K_init = np.zeros_like(cfg.K)
+    cfg.QLearner.K_init = np.ones_like(cfg.K)
     cfg.QLearner.W1_init = np.zeros_like(cfg.P)
     cfg.QLearner.W2_init = np.zeros_like(cfg.K)
     cfg.QLearner.W3_init = np.zeros_like(cfg.R)
 
     K = cfg.QLearner.K_init
-    print(np.linalg.eigvals(cfg.A - K.T.dot(cfg.R).dot(K)))
+    print(np.linalg.eigvals(cfg.A - cfg.B.dot(K)))
 
 
 class LinearSystem(BaseSystem):
@@ -116,11 +119,14 @@ class QLearnerAgent():
         # Initiallize
         K = self.K
 
+        H = np.zeros((self.m + self.n, self.m + self.n))
+
         for i in range(self.N):
             y_stack = []
             phi_stack = []
             loss = 0
             batch = random.sample(self.memory, self.M)
+
             for b in batch:
                 x, u, xdot = b
 
@@ -161,28 +167,60 @@ class QLearnerAgent():
             next_K = np.linalg.inv(W3).dot(W2)
 
             loss = ((Y - Phi.dot(w))**2).sum()
-            error = ((next_K - K)**2).sum()
+            # Kerror = ((next_K - K)**2).sum()
 
-            logging.debug(
+            # next_H = np.block([[W1, W2.T], [W2, W3]])
+            # Kp = np.block([[np.eye(3), np.zeros((3, 2))], [-K, np.eye(2)]])
+            # Qp = Kp.T.dot(sp.linalg.block_diag(cfg.Q, cfg.R)).dot(Kp)
+            # Ap = np.block([
+            #     [cfg.A - cfg.B.dot(K), cfg.B],
+            #     [np.zeros((2, 3)), cfg.F]
+            # ])
+
+            P = W1 - W2.T.dot(np.linalg.inv(W3)).dot(W2)
+
+            # Hp = sp.linalg.block_diag(P, W3)
+            Kt = next_K - K
+            next_H = np.block([
+                [P + Kt.T.dot(W3).dot(Kt), Kt.T.dot(W3)],
+                [W3.dot(Kt), W3]
+            ])
+
+            # print(Hp.dot(Ap) + Ap.T.dot(Hp) + Qp)
+
+            eigs = sorted(np.linalg.eigvals(H - next_H))
+
+            # print(eigs)
+
+            # E = H.dot(Ap) + Ap.T.dot(H) + Qp
+            # HJB_error = np.trace(E.T.dot(E))
+
+            logger.debug(
                 f"Time: {t:5.2f}/{cfg.final_time:5.2f} | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "
-                f"Error: {error:07.4f}"
+                # f"K Error: {Kerror:07.4f} | "
+                f"W22: {W3.ravel()} | "
+                # f"Hp eigs: {eigs} | "
             )
 
             # Policy Improvement
             K = next_K
+
+            H = next_H
 
         P = W1 - K.T.dot(W3).dot(K)
         P_loss = ((cfg.P - P)**2).sum()
         K_loss = ((cfg.K - K)**2).sum()
         R_loss = ((cfg.R + cfg.F.T.dot(W3) + W3.dot(cfg.F))**2).sum()
 
-        logging.info(
+        logger.info(
             f"[Finished] Time: {t:5.2f} | "
             f"P Loss: {P_loss:07.4f} | "
             f"K Loss: {K_loss:07.4f} | "
             f"R Loss: {R_loss:07.4f} | "
+            # f"K error: {Kerror:07.4f} | "
+            # f"Hp eigs: {eigs} | "
         )
 
         self.W1 = W1
@@ -252,8 +290,9 @@ class ZLearnerAgent():
 
                 lxu = 0.5 * (x.T.dot(cfg.Q + K.T.dot(cfg.R).dot(K)).dot(x))
 
-                phi1 = np.kron(xdot, x)
-                phi2 = - np.kron(cfg.R.dot(u + K.dot(x)), x)
+                # phi1 = np.kron(xdot, x)
+                phi1 = 0.5 * np.kron(x, xdot) + 0.5 * np.kron(xdot, x)
+                phi2 = - np.kron(x, cfg.R.dot(u + K.dot(x)))
                 phi = np.vstack((phi1, phi2))
 
                 y = - lxu
@@ -280,7 +319,7 @@ class ZLearnerAgent():
             loss = ((Y - Phi.dot(w))**2).sum()
             error = ((next_K - K)**2).sum()
 
-            logging.debug(
+            logger.debug(
                 f"Time: {t:5.2f}/{cfg.final_time:5.2f} | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "
@@ -294,10 +333,11 @@ class ZLearnerAgent():
         P_loss = ((cfg.P - P)**2).sum()
         K_loss = ((cfg.K - K)**2).sum()
 
-        logging.info(
+        logger.info(
             f"[Finished] Time: {t:5.2f} | "
             f"P Loss: {P_loss:07.4f} | "
             f"K Loss: {K_loss:07.4f} | "
+            # f"P eigs: {np.linalg.eigvals(P)} | "
         )
 
         self.W1 = W1
@@ -319,6 +359,7 @@ class QLearnerEnv(BaseEnv):
     def __init__(self):
         super().__init__(**cfg.QLearner.env_kwargs)
         self.x = LinearSystem()
+        self.behave_K, *_ = LQR.clqr(cfg.A, cfg.B, cfg.Q * 0.1, cfg.R * 0.1)
 
         self.logger = fym.logging.Logger(Path(cfg.dir, "qlearner-env.h5"))
         self.logger.set_info(cfg=cfg)
@@ -345,10 +386,10 @@ class QLearnerEnv(BaseEnv):
         self.x.set_dot(t, u)
 
     def get_input(self, t, x):
-        un = - cfg.K.dot(x)
-        noise = np.vstack([
+        un = - self.behave_K.dot(x)
+        noise = 10 * np.vstack([
             0.3 * np.sin(t) * np.cos(np.pi * t),
-            0.5 * np.sin(0.2 * t + 1)
+            + 0.5 * np.sin(0.2 * t + 1)
         ])
 
         return un + noise * np.exp(-0.8 * t / cfg.final_time)

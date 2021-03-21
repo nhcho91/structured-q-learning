@@ -514,29 +514,29 @@ def exp4():
 
     cfg = linear.cfg
 
-#     linear.load_config()
-#     cfg.dir = Path(basedir, "data00")
-#     cfg.label = "Z. P. Jiang (Init. Admm.)"
-#     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
-
-#     linear.load_config()
-#     cfg.dir = Path(basedir, "data01")
-#     cfg.label = "Q Learner (Init. Admm.)"
-#     run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
-
-#     linear.load_config()
-#     cfg.dir = Path(basedir, "data02")
-#     cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
-#     cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
-#     linear.calc_config()
-#     run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+    # linear.load_config()
+    # cfg.dir = Path(basedir, "data00")
+    # cfg.label = "Z. P. Jiang (Init. Admm.)"
+    # run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
 
     linear.load_config()
-    cfg.dir = Path(basedir, "data03")
-    cfg.label = "Q Learner (Init. Non-Admm.)"
-    cfg.A = np.array([[0, 1, 0], [0, 2, 0], [1, 0, 0]])
-    linear.calc_config()
+    cfg.dir = Path(basedir, "data01")
+    cfg.label = "Q Learner (Init. Admm.)"
     run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
+
+    # linear.load_config()
+    # cfg.dir = Path(basedir, "data02")
+    # cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
+    # cfg.A = np.array([[1, 1, 0], [0, 2, 0], [1, 0, -3]])
+    # linear.calc_config()
+    # run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+
+    # linear.load_config()
+    # cfg.dir = Path(basedir, "data03")
+    # cfg.label = "Q Learner (Init. Non-Admm.)"
+    # cfg.A = np.array([[1, 1, 0], [0, 2, 0], [1, 0, 3]])
+    # linear.calc_config()
+    # run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
 
 
 def exp4_plot():
@@ -573,7 +573,7 @@ def exp4_plot():
     # =================
     # States and inputs
     # =================
-    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(5, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
@@ -592,6 +592,30 @@ def exp4_plot():
     plt.ylabel(r'$u$')
     # plt.ylim(-80, 80)
 
+    # ====================
+    # Parameter estimation
+    # ====================
+    ax = plot.subplot(pos, 3)
+    plot.all(qlearner, "K", style=dict(refstyle, label="True"))
+    for d in data:
+        plot.all(
+            d, "K", is_agent=True,
+            style=dict(marker="o", markersize=2)
+        )
+    plt.ylabel(r"$\hat{K}$")
+    plt.legend()
+    # plt.ylim(-70, 30)
+
+    plot.subplot(pos, 4, sharex=ax)
+    plot.all(qlearner, "P", style=dict(qlearner.style, c="r", ls="--"))
+    for d in data:
+        plot.all(
+            d, "P", is_agent=True,
+            style=dict(marker="o", markersize=2)
+        )
+    plt.ylabel(r"$\hat{P}$")
+    # plt.ylim(-70, 30)
+
     plt.xlabel("Time, sec")
     plt.xlim(t_range)
 
@@ -599,9 +623,9 @@ def exp4_plot():
         ax.label_outer()
 
     # ==================================
-    # States and inputs (Non-Admissible
+    # States and inputs (Non-Admissible)
     # ==================================
-    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(5, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
@@ -620,49 +644,10 @@ def exp4_plot():
     plt.ylabel(r'$u$')
     # plt.ylim(-80, 80)
 
-    plt.xlabel("Time, sec")
-    plt.xlim(t_range)
-
-    for ax in plt.gcf().get_axes():
-        ax.label_outer()
-
-    # ====================
-    # Parameter estimation
-    # ====================
-    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
-    plt.figure(figsize=figsize)
-
-    ax = plot.subplot(pos, 0)
-    plot.all(qlearner, "K", style=dict(refstyle, label="True"))
-    for d in data:
-        plot.all(
-            d, "K", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{K}$")
-    plt.legend()
-    # plt.ylim(-70, 30)
-
-    plot.subplot(pos, 1, sharex=ax)
-    plot.all(qlearner, "P", style=dict(qlearner.style, c="r", ls="--"))
-    for d in data:
-        plot.all(
-            d, "P", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{P}$")
-    # plt.ylim(-70, 30)
-
-    plt.xlabel("Time, sec")
-    plt.xlim(t_range)
-
     # =====================================
     # Parameter estimation (Non-Admissible)
     # =====================================
-    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
-    plt.figure(figsize=figsize)
-
-    ax = plot.subplot(pos, 0)
+    ax = plot.subplot(pos, 3)
     plot.all(qlearner_na, "K", style=dict(refstyle, label="True"))
     for d in data_na:
         plot.all(
@@ -673,7 +658,7 @@ def exp4_plot():
     plt.legend()
     # plt.ylim(-70, 30)
 
-    plot.subplot(pos, 1, sharex=ax)
+    plot.subplot(pos, 4, sharex=ax)
     plot.all(qlearner_na, "P", style=refstyle)
     for d in data_na:
         plot.all(
@@ -685,6 +670,18 @@ def exp4_plot():
 
     plt.xlabel("Time, sec")
     plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    imgdir = Path("img", datadir.relative_to("data"))
+    imgdir.mkdir(exist_ok=True)
+
+    plt.figure(1)
+    plt.savefig(Path(imgdir, "figure_1.pdf"), bbox_inches="tight")
+
+    plt.figure(2)
+    plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
 
     plt.show()
 

@@ -21,9 +21,11 @@ def set_logger(path, file):
     file_logging_format = "%(levelname)s: %(asctime)s: %(message)s"
 
     # configure logger
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("logs")
     logger.setLevel(logging.DEBUG)
-    logging.basicConfig(
-        filename=log_file,
-        level=logging.INFO,
-        format=file_logging_format)
+
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(file_logging_format))
+
+    logger.addHandler(fh)
