@@ -2,8 +2,10 @@ import numpy as np
 import scipy
 from types import SimpleNamespace as SN
 from pathlib import Path
+import itertools
 
 from fym.core import BaseEnv, BaseSystem
+from fym.agents import LQR
 import fym.logging
 
 import matplotlib
@@ -686,6 +688,160 @@ def exp4_plot():
     plt.show()
 
 
+def exp5():
+    """
+    This experiment compares our algorithms and the Kleinman algorithm.
+    """
+    basedir = Path("data", "exp5")
+
+    # Setup
+    np.random.seed(3)
+    A = np.random.rand(5, 5)
+    B = np.random.rand(5, 3)
+    Q = np.diag([100, 10, 1, 20, 30])
+    R = np.diag([1, 3, 8])
+    Kopt, Popt, *_ = LQR.clqr(A, B, Q, R)
+    maxiter = 70
+
+    # Kleinman Iteration
+    def kleinman(K, name):
+        logger = fym.logging.Logger(path=Path(basedir, name))
+
+        for i in itertools.count(0):
+            P = scipy.linalg.solve_lyapunov(
+                (A - B.dot(K)).T, -(Q + K.T.dot(R).dot(K)))
+            next_K = np.linalg.inv(R).dot(B.T).dot(P)
+
+            logger.record(i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt)
+
+            if ((K - next_K)**2).sum() < 1e-10 or i > maxiter:
+                break
+
+            K = next_K
+
+        logger.close()
+
+    # SQL Iteration
+    def sql(K, name):
+        F = - np.diag([3, 3, 3]) * 1
+        logger = fym.logging.Logger(path=Path(basedir, name))
+
+        for i in itertools.count(0):
+            blkA = np.block([[A - B.dot(K), B], [np.zeros_like(B.T), F]])
+            blkK = np.block([[np.eye(5), np.zeros_like(B)], [-K, np.eye(3)]])
+            blkQ = blkK.T.dot(scipy.linalg.block_diag(Q, R)).dot(blkK)
+            blkP = scipy.linalg.solve_lyapunov(blkA.T, -blkQ)
+            P = blkP[:5, :5]
+            next_K = K + np.linalg.inv(blkP[5:, 5:]).dot(blkP[5:, :5])
+
+            logger.record(i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt)
+
+            if ((K - next_K)**2).sum() < 1e-10 or i > maxiter:
+                break
+
+            K = next_K
+
+        logger.close()
+
+    # Stabiling initial gain
+    K, *_ = LQR.clqr(A, B, np.eye(5), np.eye(3))
+    kleinman(K, "kleinman-stable.h5")
+    sql(K, "sql-stable.h5")
+
+    # Nonstabiliing initial gain
+    K = np.random.rand(3, 5)
+    kleinman(K, "kleinman-unstable.h5")
+    sql(K, "sql-unstable.h5")
+
+
+def exp5_plot():
+    datadir = Path("data", "exp5")
+
+    def get_data(name, label, style=dict()):
+        data = SN()
+        data.alg = fym.logging.load(Path(datadir, name))
+        data.style = dict(label=label, **style)
+        return data
+
+    def error_plot(data, estkey, optkey, style=dict()):
+        style = dict(data.style, **style)
+        plt.plot(
+            data.alg["i"],
+            np.sqrt(
+                np.square(data.alg[estkey] - data.alg[optkey]).sum(axis=(1, 2))),
+            **style
+        )
+        plt.yscale("log")
+
+    kleinman_style = dict(c="k", ls="--", marker="o", markersize=2)
+    sql_style = dict(c="b", ls="-", marker="o", markersize=2)
+
+    data_stable = [
+        get_data(name, label, style) for name, label, style in
+        (["kleinman-stable.h5", "Kleinman (stable)", kleinman_style],
+         ["sql-stable.h5", "SQL (stable)", sql_style])]
+
+    data_unstable = [
+        get_data(name, label, style) for name, label, style in
+        (["kleinman-unstable.h5", "Kleinman (unstable)", kleinman_style],
+         ["sql-unstable.h5", "SQL (unstable)", sql_style])]
+
+    subsize = (4.05, 0.946)
+    width = 4.94
+    top = 0.2
+    bottom = 0.671765
+    left = 0.5487688
+    hspace = 0.2716
+
+    # Figure 1 (stable)
+    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [error_plot(d, "P", "Popt") for d in data_stable]
+
+    plt.ylabel(r"${P}$ error")
+    plt.legend()
+
+    plot.subplot(pos, 1, sharex=ax)
+    [error_plot(d, "K", "Kopt") for d in data_stable]
+
+    plt.ylabel(r"${K}$ error")
+    plt.legend()
+
+    plt.xlabel("Iteration")
+
+    # Figure 2 (unstable)
+    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [error_plot(d, "P", "Popt") for d in data_unstable]
+
+    plt.ylabel(r"${P}$ error")
+    plt.legend()
+
+    plot.subplot(pos, 1, sharex=ax)
+    [error_plot(d, "K", "Kopt") for d in data_unstable]
+
+    plt.ylabel(r"${K}$ error")
+    plt.legend()
+
+    plt.xlabel("Iteration")
+
+    # Save
+    imgdir = Path("img", datadir.relative_to("data"))
+    imgdir.mkdir(exist_ok=True)
+
+    plt.figure(1)
+    plt.savefig(Path(imgdir, "figure_1.pdf"), bbox_inches="tight")
+
+    plt.figure(2)
+    plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
+
+    plt.show()
+
+
 def main():
     # exp1()
     # exp1_plot()
@@ -696,8 +852,11 @@ def main():
     # exp3()
     # exp3_plot()
 
-    exp4()
-    exp4_plot()
+    # exp4()
+    # exp4_plot()
+
+    exp5()
+    exp5_plot()
 
 
 if __name__ == "__main__":
