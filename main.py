@@ -695,13 +695,17 @@ def exp5():
     basedir = Path("data", "exp5")
 
     # Setup
-    np.random.seed(3)
-    A = np.random.rand(5, 5)
-    B = np.random.rand(5, 3)
-    Q = np.diag([100, 10, 1, 20, 30])
-    R = np.diag([1, 3, 8])
+    np.random.seed(3000)
+    v = np.random.randn(5, 5) * 3
+    A = np.diag([2, 3, 4, 5, 6])
+    A = v.dot(A).dot(np.linalg.inv(v))
+    B = np.random.randn(5, 7) * 3
+    Q = np.diag([100, 0, 0, 20, 30])
+    R = np.diag([1, 3, 8, 10, 11, 12, 15])
     Kopt, Popt, *_ = LQR.clqr(A, B, Q, R)
-    maxiter = 70
+    eps = 1e-16
+    maxiter = 1000
+    n, m = B.shape
 
     # Kleinman Iteration
     def kleinman(K, name):
@@ -712,9 +716,13 @@ def exp5():
                 (A - B.dot(K)).T, -(Q + K.T.dot(R).dot(K)))
             next_K = np.linalg.inv(R).dot(B.T).dot(P)
 
-            logger.record(i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt)
+            # print(np.linalg.eigvals(P))
 
-            if ((K - next_K)**2).sum() < 1e-10 or i > maxiter:
+            logger.record(
+                i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt,
+            )
+
+            if ((K - next_K)**2).sum() < eps or i > maxiter:
                 break
 
             K = next_K
@@ -723,35 +731,85 @@ def exp5():
 
     # SQL Iteration
     def sql(K, name):
-        F = - np.diag([3, 3, 3]) * 1
+        F = - np.eye(m) * 1
+        # f = np.random.rand(3, 3)
+        # F = - f.T.dot(f)
+
+        K0 = K
+        # prev_H21 = None
+
         logger = fym.logging.Logger(path=Path(basedir, name))
 
         for i in itertools.count(0):
             blkA = np.block([[A - B.dot(K), B], [np.zeros_like(B.T), F]])
-            blkK = np.block([[np.eye(5), np.zeros_like(B)], [-K, np.eye(3)]])
+            blkK = np.block([[np.eye(n), np.zeros_like(B)], [-K, np.eye(m)]])
             blkQ = blkK.T.dot(scipy.linalg.block_diag(Q, R)).dot(blkK)
-            blkP = scipy.linalg.solve_lyapunov(blkA.T, -blkQ)
-            P = blkP[:5, :5]
-            next_K = K + np.linalg.inv(blkP[5:, 5:]).dot(blkP[5:, :5])
+            blkH = scipy.linalg.solve_lyapunov(blkA.T, -blkQ)
+            H11, H21, H22 = blkH[:n, :n], blkH[n:, :n], blkH[n:, n:]
+            next_K = K + np.linalg.inv(H22).dot(H21)
 
-            logger.record(i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt)
+            P = H11 - H21.T.dot(np.linalg.inv(H22)).dot(H21)
 
-            if ((K - next_K)**2).sum() < 1e-10 or i > maxiter:
+            next_H11 = P
+
+            print("Ak: ", sorted(np.linalg.eigvals(A - B.dot(K)).real))
+            print("-Dk: ", sorted(-np.linalg.eigvals(H21.T.dot(np.linalg.inv(H22)).dot(H21)).real))
+            print("Hk: ", sorted(np.linalg.eigvals(H11).real))
+            print("H21_n: ", np.linalg.norm(H21))
+
+            Ak = A - B.dot(K)
+            print(
+                sorted(np.linalg.eigvals(
+                    (Ak + np.eye(n)).dot(np.linalg.inv(Ak - np.eye(n)))).real)
+            )
+            # if prev_H21 is not None:
+            #     print(np.linalg.norm(
+            #         prev_H21.dot(A - B.dot(K) + np.eye(n))
+            #         - H21.dot(A - B.dot(K) - np.eye(n)))
+            #     )
+
+            # print("Kkd: ",
+            #       np.sum((K - np.linalg.inv(R).dot(B.T).dot(H11))**2))
+            print("")
+
+            if np.all(np.linalg.eigvals(A - B.dot(K)).real < 0):
+                breakpoint()
+
+            Kt = Kopt - K
+            blkKt = np.block([[np.eye(n), np.zeros_like(B)], [-Kt, np.eye(m)]])
+            blkA_s = blkKt.dot(np.block([[A - B.dot(K), B], [F.dot(Kt), F]]))
+            blkH_s = scipy.linalg.solve_lyapunov(blkA_s.T, -blkQ)
+            H11_s, H22_s = blkH_s[:n, :n], blkH_s[n:, n:]
+
+            P_s = H11_s - Kt.T.dot(H22_s).dot(Kt)
+
+            eigs = np.linalg.eigvals(P)
+            Peig = [eigs.min().real, eigs.max().real]
+
+            logger.record(
+                i=i, P=P, K=K, next_K=next_K, Popt=Popt, Kopt=Kopt,
+                P_s=P_s, Peig=Peig, K0=K0, H11=H11, next_H11=next_H11,
+            )
+
+            # if np.all(np.linalg.eigvals(A - B.dot(K)).real < 0):
+            #     break
+
+            if ((K - next_K)**2).sum() < eps or i > maxiter:
                 break
 
             K = next_K
 
         logger.close()
 
-    # Stabiling initial gain
-    K, *_ = LQR.clqr(A, B, np.eye(5), np.eye(3))
-    kleinman(K, "kleinman-stable.h5")
-    sql(K, "sql-stable.h5")
-
     # Nonstabiliing initial gain
-    K = np.random.rand(3, 5)
+    K = np.zeros((m, n))
     kleinman(K, "kleinman-unstable.h5")
     sql(K, "sql-unstable.h5")
+
+    # Stabiling initial gain
+    K, *_ = LQR.clqr(A, B, np.eye(n), np.eye(m))
+    kleinman(K, "kleinman-stable.h5")
+    sql(K, "sql-stable.h5")
 
 
 def exp5_plot():
@@ -763,12 +821,13 @@ def exp5_plot():
         data.style = dict(label=label, **style)
         return data
 
-    def error_plot(data, estkey, optkey, style=dict()):
+    def error_plot(data, estkey, optkey, **style):
         style = dict(data.style, **style)
         plt.plot(
             data.alg["i"],
             np.sqrt(
-                np.square(data.alg[estkey] - data.alg[optkey]).sum(axis=(1, 2))),
+                np.square(
+                    data.alg[estkey] - data.alg[optkey]).sum(axis=(1, 2))),
             **style
         )
         plt.yscale("log")
@@ -779,12 +838,12 @@ def exp5_plot():
     data_stable = [
         get_data(name, label, style) for name, label, style in
         (["kleinman-stable.h5", "Kleinman (stable)", kleinman_style],
-         ["sql-stable.h5", "SQL (stable)", sql_style])]
+         ["sql-stable.h5", "Proposed (stable)", sql_style])]
 
     data_unstable = [
         get_data(name, label, style) for name, label, style in
         (["kleinman-unstable.h5", "Kleinman (unstable)", kleinman_style],
-         ["sql-unstable.h5", "SQL (unstable)", sql_style])]
+         ["sql-unstable.h5", "Proposed (unstable)", sql_style])]
 
     subsize = (4.05, 0.946)
     width = 4.94
@@ -799,6 +858,7 @@ def exp5_plot():
 
     ax = plot.subplot(pos, 0)
     [error_plot(d, "P", "Popt") for d in data_stable]
+    error_plot(data_unstable[1], "P_s", "Popt", c="r")
 
     plt.ylabel(r"${P}$ error")
     plt.legend()
@@ -812,11 +872,12 @@ def exp5_plot():
     plt.xlabel("Iteration")
 
     # Figure 2 (unstable)
-    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(4, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
-    [error_plot(d, "P", "Popt") for d in data_unstable]
+    [error_plot(d, "P", "Popt") for d in reversed(data_unstable)]
+    # error_plot(data_unstable[1], "P_s", "Popt", c="r")
 
     plt.ylabel(r"${P}$ error")
     plt.legend()
@@ -826,6 +887,17 @@ def exp5_plot():
 
     plt.ylabel(r"${K}$ error")
     plt.legend()
+
+    plot.subplot(pos, 2, sharex=ax)
+    plt.plot(data_unstable[1].alg["i"], data_unstable[1].alg["Peig"][:, 0])
+    plt.plot(data_unstable[1].alg["i"], data_unstable[1].alg["Peig"][:, 1])
+
+    plt.ylabel(r"Eigenvalues")
+
+    plot.subplot(pos, 3, sharex=ax)
+    [error_plot(d, "K", "next_K") for d in reversed(data_unstable)]
+
+    plt.ylabel(r"$K_{k+1} - K_k$")
 
     plt.xlabel("Iteration")
 
