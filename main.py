@@ -6,6 +6,7 @@ import itertools
 
 from fym.core import BaseEnv, BaseSystem
 from fym.agents import LQR
+from fym.utils.linearization import jacob_analytic
 import fym.logging
 
 import matplotlib
@@ -914,6 +915,316 @@ def exp5_plot():
     plt.show()
 
 
+def exp6():
+    """This experiment uses a complex quadrotor model to learn the optimal
+    policy with arbitrary initial policy. The morphing aircraft in ``fym``
+    is used.
+    """
+    from fym.models.aircraft import MorphingLon
+    import agents
+
+    class Env(BaseEnv):
+        def __init__(self):
+            super().__init__(**vars(cfg.env_kwargs))
+            self.x = MorphingLon()
+
+            trims = self.x.get_trim()
+            self.trim = {k: v for k, v in zip(["x", "u", "eta"], trims)}
+
+            self.A = jacob_analytic(self.x.deriv, 0)(*trims)
+            self.B = jacob_analytic(self.x.deriv, 1)(*trims)
+            self.Kopt, self.Popt = LQR.clqr(self.A, self.B, cfg.Q, cfg.R)
+            self.behave_K, _ = LQR.clqr(self.A, self.B, cfg.Qb, cfg.Rb)
+
+            self.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
+            self.logger.set_info(cfg=cfg)
+
+        def step(self, action):
+            *_, done = self.update()
+            next_obs = self.observation()
+            return next_obs, None, done
+
+        def behavior(self, t, x):
+            un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
+            noise = np.vstack([
+                0.05 * (np.sin(t) + 1) * (np.cos(np.pi * t) + 1),
+                - 1 * np.sin(3.1 * t + 2) + 1 * np.cos(t)**2,
+            ]) * 0.05
+
+            u = un + noise * np.exp(-0.8 * t / cfg.env_kwargs.max_t)
+            return u
+
+        def deriv(self, t, x):
+            u = self.behavior(t, x)
+            eta = self.trim["eta"]
+            return u, eta
+
+        def observation(self):
+            t = self.clock.get()
+            x = self.x.state
+            u, eta = self.deriv(t, x)
+            xdot = self.x.deriv(x, u, eta)
+            dx = x - self.trim["x"]
+            du = u - self.trim["u"]
+            # print(self.A.dot(dx) + self.B.dot(du))
+            # print(xdot)
+            # breakpoint()
+            return t, dx, du, xdot
+
+        def reset(self):
+            super().reset()
+            return self.observation()
+
+        def set_dot(self, t):
+            x = self.x.state
+            u, eta = self.deriv(t, x)
+            self.x.dot = self.x.deriv(x, u, eta)
+
+        def logger_callback(self, i, t, y, *args):
+            states = self.observe_dict(y)
+            x = states["x"]
+            u, eta = self.deriv(t, x)
+            return dict(t=t, u=u, eta=eta, K=self.Kopt, P=self.Popt, **states)
+
+    def load_config():
+        cfg.env_kwargs = SN()
+        cfg.env_kwargs.dt = 0.01
+        cfg.env_kwargs.max_t = 80
+
+        cfg.Q = np.diag([10, 10, 1, 10])
+        cfg.R = np.diag([1000, 1])
+        cfg.F = - 1 * np.eye(2)
+
+        cfg.Qb = np.diag([1, 1, 1, 10])
+        cfg.Rb = np.diag([1000, 1])
+
+    def run(env, agent):
+        obs = env.reset()
+
+        while True:
+            env.render()
+
+            action = agent.get_action(obs)
+            next_obs, reward, done = env.step(action)
+
+            agent.update(obs, action, next_obs, reward, done)
+
+            t = obs[0]
+
+            if agent.is_train(t):
+                agent.train(t)
+
+            if agent.is_record(t):
+                record = agent.logger_callback()
+                agent.logger.record(t=t, **record)
+                agent.last_t = t
+
+            if done:
+                break
+
+            obs = next_obs
+
+        env.close()
+        agent.close()
+
+    # Init the experiment
+    expdir = Path("data/exp6")
+    logs.set_logger(expdir, "train.log")
+    cfg = SN()
+
+    # Data 001 - Defaut configuration
+    load_config()  # Load the experiment default configuration
+    cfg.dir = Path(expdir, "data-001")
+    cfg.label = "SQL"
+
+    # Setup the agent configuration
+    agents.load_config()
+    cfg.SQLAgent = agents.cfg.SQLAgent
+
+    env = Env()
+    agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F)
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
+    run(env, agent)
+
+    # Data 002 - Defaut configuration
+    load_config()  # Load the experiment default configuration
+    cfg.dir = Path(expdir, "data-002")
+    cfg.label = "Kleinman"
+
+    # Setup the agent configuration
+    agents.load_config()
+    cfg.KLMAgent = agents.cfg.KLMAgent
+
+    env = Env()
+    agent = agents.KLMAgent(cfg.Q, cfg.R)
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
+    run(env, agent)
+
+
+def exp6_plot():
+    datadir = Path("data", "exp6")
+    sql = plot.get_data(Path(datadir, "data-001"))
+    klm = plot.get_data(Path(datadir, "data-002"))
+    data = [sql, klm]
+    # data_na = []
+
+    basestyle = dict(c="k", lw=0.7)
+    refstyle = dict(basestyle, c="r", ls="--")
+    klm_style = dict(basestyle, c="y", ls="-")
+    sql_style = dict(basestyle, c="b", ls="-.")
+    klm.style.update(klm_style)
+    sql.style.update(sql_style)
+    # zlearner_na.style.update(klm_style)
+    # qlearner_na.style.update(sql_style)
+
+    # Figure common setup
+    t_range = (0, sql.info["cfg"].env_kwargs.max_t)
+
+    # All in inches
+    subsize = (4.05, 0.946)
+    width = 4.94
+    top = 0.2
+    bottom = 0.671765
+    left = 0.5487688
+    hspace = 0.2716
+
+    # =================
+    # States and inputs
+    # =================
+    figsize, pos = plot.posing(4, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [plot.vector_by_index(d, "x", 0)[0] for d in data]
+    plt.ylabel(r"$V_T$")
+    # plt.ylim(-2, 2)
+    plt.legend()
+
+    plot.subplot(pos, 1, sharex=ax)
+    [plot.vector_by_index(d, "x", 1) for d in data]
+    plt.ylabel(r"$\alpha$")
+    # plt.ylim(-2, 2)
+
+    plot.subplot(pos, 2, sharex=ax)
+    [plot.vector_by_index(d, "x", 2) for d in data]
+    plt.ylabel(r'$q$')
+    # plt.ylim(-80, 80)
+
+    plot.subplot(pos, 3, sharex=ax)
+    [plot.vector_by_index(d, "x", 3) for d in data]
+    plt.ylabel(r'$\gamma$')
+
+    plt.xlabel("Time, sec")
+    plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    # ====================
+    # Parameter estimation
+    # ====================
+    figsize, pos = plot.posing(4, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [plot.vector_by_index(d, "u", 0) for d in data]
+    plt.ylabel(r'$\delta_t$')
+
+    plot.subplot(pos, 1, sharex=ax)
+    [plot.vector_by_index(d, "u", 1) for d in data]
+    plt.ylabel(r'$\delta_e$')
+
+    plot.subplot(pos, 2, sharex=ax)
+    plot.all(sql, "K", style=dict(refstyle, label="True"))
+    for d in data:
+        plot.all(
+            d, "K", is_agent=True,
+            style=dict(marker="o", markersize=2)
+        )
+    plt.ylabel(r"$\hat{K}$")
+    plt.legend()
+    # plt.ylim(-70, 30)
+
+    plot.subplot(pos, 3, sharex=ax)
+    plot.all(sql, "P", style=dict(sql.style, c="r", ls="--"))
+    for d in data:
+        plot.all(
+            d, "P", is_agent=True,
+            style=dict(marker="o", markersize=2)
+        )
+    plt.ylabel(r"$\hat{P}$")
+    # plt.ylim(-70, 30)
+
+    plt.xlabel("Time, sec")
+    plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    # # ==================================
+    # # States and inputs (Non-Admissible)
+    # # ==================================
+    # figsize, pos = plot.posing(5, subsize, width, top, bottom, left, hspace)
+    # plt.figure(figsize=figsize)
+
+    # ax = plot.subplot(pos, 0)
+    # [plot.vector_by_index(d, "x", 0)[0] for d in data_na]
+    # plt.ylabel(r"$x_1$")
+    # # plt.ylim(-2, 2)
+    # plt.legend()
+
+    # plot.subplot(pos, 1, sharex=ax)
+    # [plot.vector_by_index(d, "x", 1) for d in data_na]
+    # plt.ylabel(r"$x_2$")
+    # # plt.ylim(-2, 2)
+
+    # plot.subplot(pos, 2, sharex=ax)
+    # [plot.vector_by_index(d, "u", 0) for d in data_na]
+    # plt.ylabel(r'$u$')
+    # # plt.ylim(-80, 80)
+
+    # # =====================================
+    # # Parameter estimation (Non-Admissible)
+    # # =====================================
+    # ax = plot.subplot(pos, 3)
+    # plot.all(qlearner_na, "K", style=dict(refstyle, label="True"))
+    # for d in data_na:
+    #     plot.all(
+    #         d, "K", is_agent=True,
+    #         style=dict(marker="o", markersize=2)
+    #     )
+    # plt.ylabel(r"$\hat{K}$")
+    # plt.legend()
+    # # plt.ylim(-70, 30)
+
+    # plot.subplot(pos, 4, sharex=ax)
+    # plot.all(qlearner_na, "P", style=refstyle)
+    # for d in data_na:
+    #     plot.all(
+    #         d, "P", is_agent=True,
+    #         style=dict(marker="o", markersize=2)
+    #     )
+    # plt.ylabel(r"$\hat{P}$")
+    # # plt.ylim(-70, 30)
+
+    # plt.xlabel("Time, sec")
+    # plt.xlim(t_range)
+
+    # for ax in plt.gcf().get_axes():
+    #     ax.label_outer()
+
+    imgdir = Path("img", datadir.relative_to("data"))
+    imgdir.mkdir(exist_ok=True)
+
+    plt.figure(1)
+    plt.savefig(Path(imgdir, "figure_1.pdf"), bbox_inches="tight")
+
+    # plt.figure(2)
+    # plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
+
+    plt.show()
+
+
 def main():
     # exp1()
     # exp1_plot()
@@ -927,8 +1238,11 @@ def main():
     # exp4()
     # exp4_plot()
 
-    exp5()
-    exp5_plot()
+    # exp5()
+    # exp5_plot()
+
+    exp6()
+    exp6_plot()
 
 
 if __name__ == "__main__":
