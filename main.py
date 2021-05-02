@@ -1111,9 +1111,6 @@ def exp6():
             xdot = self.x.deriv(x, u, eta)
             dx = x - self.trim["x"]
             du = u - self.trim["u"]
-            # print(self.A.dot(dx) + self.B.dot(du))
-            # print(xdot)
-            # breakpoint()
             return t, dx, du, xdot
 
         def set_dot(self, t):
@@ -1132,6 +1129,18 @@ def exp6():
         cfg.env_kwargs.dt = 0.01
         cfg.env_kwargs.max_t = 80
 
+        agents.load_config()
+
+        cfg.Agent = agents.cfg
+        cfg.Agent.CommonAgent.memory_len = 2000
+        cfg.Agent.CommonAgent.batch_size = 1000
+        cfg.Agent.CommonAgent.train_epoch = 20
+        cfg.Agent.CommonAgent.train_start = 10
+        cfg.Agent.CommonAgent.train_period = 3
+
+        cfg.Agent.SQLAgent = SN(**vars(cfg.Agent.CommonAgent))
+        cfg.Agent.KLMAgent = SN(**vars(cfg.Agent.CommonAgent))
+
         cfg.Q = np.diag([10, 10, 1, 10])
         cfg.R = np.diag([1000, 1])
         cfg.F = - 1 * np.eye(2)
@@ -1139,34 +1148,35 @@ def exp6():
         cfg.Qb = np.diag([1, 1, 1, 10])
         cfg.Rb = np.diag([1000, 1])
 
+        cfg.K_init = np.zeros((2, 4))
+
     # Init the experiment
     expdir = Path("data/exp6")
     logs.set_logger(expdir, "train.log")
     cfg = SN()
 
-    # Data 001 - Defaut configuration
+    """
+    Data 001 ~ Data 002
+    This sub-experiment compares SQL and KLM for morphing aircraft
+    using an initial unstable policy
+    """
+    # Data 001
     load_config()  # Load the experiment default configuration
     cfg.dir = Path(expdir, "data-001")
     cfg.label = "SQL"
-
-    # Setup the agent configuration
     agents.load_config()
     cfg.SQLAgent = agents.cfg.SQLAgent
-
     env = Env()
     agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
     env.run(agent)
 
-    # Data 002 - Defaut configuration
+    # Data 002
     load_config()  # Load the experiment default configuration
     cfg.dir = Path(expdir, "data-002")
     cfg.label = "Kleinman"
-
-    # Setup the agent configuration
     agents.load_config()
     cfg.KLMAgent = agents.cfg.KLMAgent
-
     env = Env()
     agent = agents.KLMAgent(cfg.Q, cfg.R)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
@@ -1347,14 +1357,14 @@ def main():
     # exp3()
     # exp3_plot()
 
-    exp4()
-    exp4_plot()
+    # exp4()
+    # exp4_plot()
 
     # exp5()
     # exp5_plot()
 
-    # exp6()
-    # exp6_plot()
+    exp6()
+    exp6_plot()
 
 
 if __name__ == "__main__":
