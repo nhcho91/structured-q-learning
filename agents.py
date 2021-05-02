@@ -14,49 +14,28 @@ cfg = SN()
 
 
 def load_config():
-    cfg.SQLAgent = SN()
-    cfg.SQLAgent.memory_len = 2000
-    cfg.SQLAgent.batch_size = 400
-    cfg.SQLAgent.train_epoch = 100
-    cfg.SQLAgent.train_period = 3
+    cfg.CommonAgent = SN()
+    cfg.CommonAgent.memory_len = 2000
+    cfg.CommonAgent.batch_size = 400
+    cfg.CommonAgent.train_epoch = 100
+    cfg.CommonAgent.train_start = 6
+    cfg.CommonAgent.train_period = 3
 
-    cfg.KLMAgent = SN()
-    cfg.KLMAgent.memory_len = 2000
-    cfg.KLMAgent.batch_size = 400
-    cfg.KLMAgent.train_epoch = 100
-    cfg.KLMAgent.train_period = 3
+    cfg.SQLAgent = SN(**vars(cfg.CommonAgent))
+    cfg.KLMAgent = SN(**vars(cfg.CommonAgent))
 
 
-class SQLAgent():
-    def __init__(self, Q, R, F,
-                 W1_init=None, W2_init=None, W3_init=None, K_init=None):
-        self.Q, self.R, self.F = Q, R, F
-        self.memory = deque(maxlen=cfg.SQLAgent.memory_len)
+class Agent:
+    def __init__(self, cfg):
+        self.memory = deque(maxlen=cfg.memory_len)
 
-        n, m = Q.shape[0], R.shape[0]
-        self.W1 = W1_init or np.zeros((n, n))
-        self.W2 = W2_init or np.zeros((m, n))
-        self.W3 = W3_init or np.zeros((m, m))
-        self.K = K_init or np.zeros((m, n))
+        self.M = cfg.batch_size
+        self.N = cfg.train_epoch
 
-        self.M = cfg.SQLAgent.batch_size
-        self.N = cfg.SQLAgent.train_epoch
-
-        self.n, self.m = n, m
-
-        self.W1_his = np.zeros((self.N, self.n, self.n))
-        self.W2_his = np.zeros((self.N, self.m, self.n))
-        self.W3_his = np.zeros((self.N, self.m, self.m))
+        self.train_start = cfg.train_start
+        self.train_period = cfg.train_period
 
         self.last_t = 0
-
-    def logger_callback(self):
-        P = self.W1 - self.K.T.dot(self.W3).dot(self.K)
-        return dict(
-            W1=self.W1, W2=self.W2, W3=self.W3, K=self.K,
-            W1_his=self.W1_his, W2_his=self.W2_his, W3_his=self.W3_his,
-            P=P,
-        )
 
     def get_action(self, obs):
         return None
@@ -66,10 +45,40 @@ class SQLAgent():
         self.memory.append((x, u, xdot))
 
     def is_train(self, t):
-        return len(self.memory) >= self.memory.maxlen and self.is_record(t)
+        return t > self.train_start and self.is_record(t)
 
     def is_record(self, t):
-        return t - self.last_t > cfg.SQLAgent.train_period
+        return t - self.last_t > self.train_period
+
+    def close(self):
+        self.logger.close()
+
+
+class SQLAgent(Agent):
+    def __init__(self, Q, R, F,
+                 W1_init=None, W2_init=None, W3_init=None, K_init=None):
+        super().__init__(cfg.SQLAgent)
+        self.Q, self.R, self.F = Q, R, F
+
+        n, m = Q.shape[0], R.shape[0]
+        self.W1 = W1_init if W1_init is not None else np.zeros((n, n))
+        self.W2 = W2_init if W2_init is not None else np.zeros((m, n))
+        self.W3 = W3_init if W3_init is not None else np.zeros((m, m))
+        self.K = K_init if K_init is not None else np.zeros((m, n))
+
+        self.n, self.m = n, m
+
+        self.W1_his = np.zeros((self.N, self.n, self.n))
+        self.W2_his = np.zeros((self.N, self.m, self.n))
+        self.W3_his = np.zeros((self.N, self.m, self.m))
+
+    def logger_callback(self):
+        P = self.W1 - self.K.T.dot(self.W3).dot(self.K)
+        return dict(
+            W1=self.W1, W2=self.W2, W3=self.W3, K=self.K,
+            W1_his=self.W1_his, W2_his=self.W2_his, W3_his=self.W3_his,
+            P=P,
+        )
 
     def train(self, t):
         for i in range(self.N):
@@ -84,7 +93,7 @@ class SQLAgent():
                 lxu = 0.5 * (x.T.dot(self.Q).dot(x) + u.T.dot(self.R).dot(u))
 
                 udot = self.F.dot(u + self.K.dot(x)) - self.K.dot(xdot)
-                phi1 = 0.5 * np.kron(x, xdot) + 0.5 * np.kron(xdot, x)
+                phi1 = 0.5 * (np.kron(x, xdot) + np.kron(xdot, x))
                 phi2 = np.kron(xdot, u) + np.kron(x, udot)
                 phi3 = 0.5 * (np.kron(u, udot) + np.kron(udot, u))
                 phi = np.vstack((phi1, phi2, phi3))
@@ -99,9 +108,8 @@ class SQLAgent():
 
             w1s = self.n * self.n
             w2s = self.n * self.m
-            W = np.diag(-1/Y.ravel())
-            w = np.linalg.pinv(Phi.T.dot(W).dot(Phi)).dot(Phi.T).dot(W).dot(Y)
-            # w2 = np.linalg.pinv(Phi).dot(Y)
+
+            w = np.linalg.pinv(Phi).dot(Y)
             w1, w2, w3 = w[:w1s], w[w1s:w1s + w2s], w[w1s + w2s:]
 
             self.W1 = w1.reshape(self.n, self.n, order="F")
@@ -127,30 +135,22 @@ class SQLAgent():
             # Policy Improvement
             self.K = next_K
 
-    def close(self):
-        self.logger.close()
 
-
-class KLMAgent():
+class KLMAgent(Agent):
     def __init__(self, Q, R,
                  W1_init=None, W2_init=None, K_init=None):
+        super().__init__(cfg.KLMAgent)
         self.Q, self.R = Q, R
-        self.memory = deque(maxlen=cfg.KLMAgent.memory_len)
 
         n, m = Q.shape[0], R.shape[0]
-        self.W1 = W1_init or np.zeros((n, n))
-        self.W2 = W2_init or np.zeros((m, n))
-        self.K = K_init or np.zeros((m, n))
-
-        self.M = cfg.KLMAgent.batch_size
-        self.N = cfg.KLMAgent.train_epoch
+        self.W1 = W1_init if W1_init is not None else np.zeros((n, n))
+        self.W2 = W2_init if W2_init is not None else np.zeros((m, n))
+        self.K = K_init if K_init is not None else np.zeros((m, n))
 
         self.n, self.m = n, m
 
         self.W1_his = np.zeros((self.N, self.n, self.n))
         self.W2_his = np.zeros((self.N, self.m, self.n))
-
-        self.last_t = 0
 
     def logger_callback(self):
         P = self.W1 - self.K.T.dot(self.R).dot(self.K)
@@ -159,19 +159,6 @@ class KLMAgent():
             W1_his=self.W1_his, W2_his=self.W2_his,
             P=P,
         )
-
-    def get_action(self, obs):
-        return None
-
-    def update(self, obs, action, next_obs, reward, done):
-        t, x, u, xdot = obs
-        self.memory.append((x, u, xdot))
-
-    def is_train(self, t):
-        return len(self.memory) >= self.memory.maxlen and self.is_record(t)
-
-    def is_record(self, t):
-        return t - self.last_t > cfg.KLMAgent.train_period
 
     def train(self, t):
         for i in range(self.N):
@@ -224,6 +211,3 @@ class KLMAgent():
 
             # Policy Improvement
             self.K = next_K
-
-    def close(self):
-        self.logger.close()

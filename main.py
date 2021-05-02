@@ -17,6 +17,7 @@ import wingrock
 import multirotor
 import linear
 import logs
+import agents
 
 np.warnings.filterwarnings("error", category=np.VisibleDeprecationWarning)
 plt.rc("font", family="Times New Roman")
@@ -510,60 +511,177 @@ def exp3_plot():
     plt.show()
 
 
+class LearningEnv(BaseEnv):
+    def step(self, action):
+        *_, done = self.update()
+        next_obs = self.observation()
+        return next_obs, None, done
+
+    def behavior(self, t, x):
+        return NotImplementedError("The behavior policy is not implemented")
+
+    def observation(self):
+        return NotImplementedError("The observation is not implemented")
+
+    def reset(self):
+        super().reset()
+        return self.observation()
+
+    def run(self, agent):
+        obs = self.reset()
+
+        while True:
+            self.render()
+
+            action = agent.get_action(obs)
+            next_obs, reward, done = self.step(action)
+
+            agent.update(obs, action, next_obs, reward, done)
+
+            t = obs[0]
+
+            if agent.is_train(t):
+                agent.train(t)
+
+            if agent.is_record(t):
+                record = agent.logger_callback()
+                agent.logger.record(t=t, **record)
+                agent.last_t = t
+
+            if done:
+                break
+
+            obs = next_obs
+
+        self.close()
+        agent.close()
+
+
 def exp4():
-    basedir = Path("data/exp4")
+    """This experimet uses a simple linear model to learn the optimal policy
+    with arbitrary initial policy.
+    """
 
-    logs.set_logger(basedir, "train.log")
+    class Env(LearningEnv):
+        def __init__(self):
+            super().__init__(**vars(cfg.env_kwargs))
+            wingrock.load_config()
+            self.x = wingrock.System()
+            self.x.unc = lambda t, x: 0
 
-    cfg = linear.cfg
+            self.A = wingrock.cfg.Am
+            self.B = wingrock.cfg.B
+            self.Kopt, self.Popt = LQR.clqr(self.A, self.B, cfg.Q, cfg.R)
+            self.behave_K, _ = LQR.clqr(self.A - 3, self.B, cfg.Qb, cfg.Rb)
 
-    # linear.load_config()
-    # cfg.dir = Path(basedir, "data00")
-    # cfg.label = "Z. P. Jiang (Init. Admm.)"
-    # run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+            self.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
+            self.logger.set_info(cfg=cfg)
 
-    linear.load_config()
-    cfg.dir = Path(basedir, "data01")
-    cfg.label = "Q Learner (Init. Admm.)"
-    run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
+        def behavior(self, t, x):
+            un = - self.behave_K.dot(x)
+            noise = np.sum([
+                0.05 * (np.sin(t) + 1) * (np.cos(np.pi * t) + 1),
+                - 1 * np.sin(3.1 * t + 2) + 1 * np.cos(t)**2,
+            ]) * 0.1
 
-    # linear.load_config()
-    # cfg.dir = Path(basedir, "data02")
-    # cfg.label = "Z. P. Jiang (Init. Non-Admm.)"
-    # cfg.A = np.array([[1, 1, 0], [0, 2, 0], [1, 0, -3]])
-    # linear.calc_config()
-    # run_with_agent(linear.QLearnerEnv(), linear.ZLearnerAgent())
+            u = un + noise * np.exp(-0.8 * t / cfg.env_kwargs.max_t)
+            return u
 
-    # linear.load_config()
-    # cfg.dir = Path(basedir, "data03")
-    # cfg.label = "Q Learner (Init. Non-Admm.)"
-    # cfg.A = np.array([[1, 1, 0], [0, 2, 0], [1, 0, 3]])
-    # linear.calc_config()
-    # run_with_agent(linear.QLearnerEnv(), linear.QLearnerAgent())
+        def observation(self):
+            t = self.clock.get()
+            x = self.x.state
+            u, c = self.deriv(t, x)
+            xdot = self.x.deriv(t, x, u, c)
+            return t, x, u, xdot
+
+        def deriv(self, t, x):
+            u = self.behavior(t, x)
+            c = 0
+            return u, c
+
+        def set_dot(self, t):
+            x = self.x.state
+            u, c = self.deriv(t, x)
+            self.x.dot = self.x.deriv(t, x, u, c)
+
+        def logger_callback(self, i, t, y, *args):
+            states = self.observe_dict(y)
+            x = states["x"]
+            u, c = self.deriv(t, x)
+            return dict(t=t, u=u, c=c, K=self.Kopt, P=self.Popt, **states)
+
+    def load_config():
+        cfg.env_kwargs = SN()
+        cfg.env_kwargs.dt = 0.01
+        cfg.env_kwargs.max_t = 20
+
+        agents.load_config()
+
+        cfg.Agent = agents.cfg
+        cfg.Agent.CommonAgent.memory_len = 2000
+        cfg.Agent.CommonAgent.batch_size = 1000
+        cfg.Agent.CommonAgent.train_epoch = 20
+        cfg.Agent.CommonAgent.train_start = 10
+        cfg.Agent.CommonAgent.train_period = 3
+
+        cfg.Agent.SQLAgent = SN(**vars(cfg.Agent.CommonAgent))
+        cfg.Agent.KLMAgent = SN(**vars(cfg.Agent.CommonAgent))
+
+        cfg.Q = np.diag([10, 10, 1])
+        cfg.R = np.diag([10])
+        cfg.F = - 1 * np.eye(1)
+
+        cfg.Qb = np.diag([1, 1, 1])
+        cfg.Rb = np.diag([1])
+
+        cfg.K_init = -5 * np.ones((1, 3))
+
+    # Init the experiment
+    expdir = Path("data/exp4")
+    logs.set_logger(expdir, "train.log")
+    cfg = SN()
+
+    # Data 001 - Default configuration
+    load_config()  # Load the experiment default configuration
+    cfg.dir = Path(expdir, "data-001")
+    cfg.label = "SQL"
+
+    # Setup the agent configuration
+    env = Env()
+    agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F, K_init=cfg.K_init)
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
+    env.run(agent)
+
+    # Data 002 - Defaut configuration
+    load_config()  # Load the experiment default configuration
+    cfg.dir = Path(expdir, "data-002")
+    cfg.label = "Kleinman"
+
+    # Setup the agent configuration
+    env = Env()
+    agent = agents.KLMAgent(cfg.Q, cfg.R, K_init=cfg.K_init)
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
+    env.run(agent)
 
 
 def exp4_plot():
     datadir = Path("data", "exp4")
-    zlearner = plot.get_data(Path(datadir, "data00"))
-    qlearner = plot.get_data(Path(datadir, "data01"))
-    zlearner_na = plot.get_data(Path(datadir, "data02"))
-    qlearner_na = plot.get_data(Path(datadir, "data03"))
-    data = [zlearner, qlearner]
-    data_na = [zlearner_na, qlearner_na]
+    sql = plot.get_data(Path(datadir, "data-001"))
+    klm = plot.get_data(Path(datadir, "data-002"))
+    data = [sql, klm]
+    # data_na = []
 
     basestyle = dict(c="k", lw=0.7)
     refstyle = dict(basestyle, c="r", ls="--")
-    zstyle = dict(basestyle, c="y", ls="-")
-    qstyle = dict(basestyle, c="b", ls="-.")
-    zlearner.style.update(zstyle)
-    qlearner.style.update(qstyle)
-    zlearner_na.style.update(zstyle)
-    qlearner_na.style.update(qstyle)
+    klm_style = dict(basestyle, c="y", ls="-")
+    sql_style = dict(basestyle, c="b", ls="-.")
+    klm.style.update(klm_style)
+    sql.style.update(sql_style)
+    # zlearner_na.style.update(klm_style)
+    # qlearner_na.style.update(sql_style)
 
     # Figure common setup
-    cfg = linear.cfg
-    linear.load_config()
-    t_range = (0, cfg.final_time)
+    t_range = (0, sql.info["cfg"].env_kwargs.max_t)
 
     # All in inches
     subsize = (4.05, 0.946)
@@ -576,7 +694,7 @@ def exp4_plot():
     # =================
     # States and inputs
     # =================
-    figsize, pos = plot.posing(5, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
@@ -591,68 +709,29 @@ def exp4_plot():
     # plt.ylim(-2, 2)
 
     plot.subplot(pos, 2, sharex=ax)
-    [plot.vector_by_index(d, "u", 0) for d in data]
-    plt.ylabel(r'$u$')
+    [plot.vector_by_index(d, "x", 2) for d in data]
+    plt.ylabel(r'$x_3$')
     # plt.ylim(-80, 80)
+
+    plt.xlabel("Time, sec")
+    plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
 
     # ====================
     # Parameter estimation
     # ====================
-    ax = plot.subplot(pos, 3)
-    plot.all(qlearner, "K", style=dict(refstyle, label="True"))
-    for d in data:
-        plot.all(
-            d, "K", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{K}$")
-    plt.legend()
-    # plt.ylim(-70, 30)
-
-    plot.subplot(pos, 4, sharex=ax)
-    plot.all(qlearner, "P", style=dict(qlearner.style, c="r", ls="--"))
-    for d in data:
-        plot.all(
-            d, "P", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{P}$")
-    # plt.ylim(-70, 30)
-
-    plt.xlabel("Time, sec")
-    plt.xlim(t_range)
-
-    for ax in plt.gcf().get_axes():
-        ax.label_outer()
-
-    # ==================================
-    # States and inputs (Non-Admissible)
-    # ==================================
-    figsize, pos = plot.posing(5, subsize, width, top, bottom, left, hspace)
+    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
-    [plot.vector_by_index(d, "x", 0)[0] for d in data_na]
-    plt.ylabel(r"$x_1$")
-    # plt.ylim(-2, 2)
-    plt.legend()
+    [plot.vector_by_index(d, "u", 0) for d in data]
+    plt.ylabel(r'$\delta_t$')
 
     plot.subplot(pos, 1, sharex=ax)
-    [plot.vector_by_index(d, "x", 1) for d in data_na]
-    plt.ylabel(r"$x_2$")
-    # plt.ylim(-2, 2)
-
-    plot.subplot(pos, 2, sharex=ax)
-    [plot.vector_by_index(d, "u", 0) for d in data_na]
-    plt.ylabel(r'$u$')
-    # plt.ylim(-80, 80)
-
-    # =====================================
-    # Parameter estimation (Non-Admissible)
-    # =====================================
-    ax = plot.subplot(pos, 3)
-    plot.all(qlearner_na, "K", style=dict(refstyle, label="True"))
-    for d in data_na:
+    plot.all(sql, "K", style=dict(refstyle, label="True"))
+    for d in data:
         plot.all(
             d, "K", is_agent=True,
             style=dict(marker="o", markersize=2)
@@ -661,9 +740,9 @@ def exp4_plot():
     plt.legend()
     # plt.ylim(-70, 30)
 
-    plot.subplot(pos, 4, sharex=ax)
-    plot.all(qlearner_na, "P", style=refstyle)
-    for d in data_na:
+    plot.subplot(pos, 2, sharex=ax)
+    plot.all(sql, "P", style=dict(sql.style, c="r", ls="--"))
+    for d in data:
         plot.all(
             d, "P", is_agent=True,
             style=dict(marker="o", markersize=2)
@@ -676,15 +755,6 @@ def exp4_plot():
 
     for ax in plt.gcf().get_axes():
         ax.label_outer()
-
-    imgdir = Path("img", datadir.relative_to("data"))
-    imgdir.mkdir(exist_ok=True)
-
-    plt.figure(1)
-    plt.savefig(Path(imgdir, "figure_1.pdf"), bbox_inches="tight")
-
-    plt.figure(2)
-    plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
 
     plt.show()
 
@@ -921,9 +991,8 @@ def exp6():
     is used.
     """
     from fym.models.aircraft import MorphingLon
-    import agents
 
-    class Env(BaseEnv):
+    class Env(LearningEnv):
         def __init__(self):
             super().__init__(**vars(cfg.env_kwargs))
             self.x = MorphingLon()
@@ -938,11 +1007,6 @@ def exp6():
 
             self.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
             self.logger.set_info(cfg=cfg)
-
-        def step(self, action):
-            *_, done = self.update()
-            next_obs = self.observation()
-            return next_obs, None, done
 
         def behavior(self, t, x):
             un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
@@ -971,10 +1035,6 @@ def exp6():
             # breakpoint()
             return t, dx, du, xdot
 
-        def reset(self):
-            super().reset()
-            return self.observation()
-
         def set_dot(self, t):
             x = self.x.state
             u, eta = self.deriv(t, x)
@@ -998,35 +1058,6 @@ def exp6():
         cfg.Qb = np.diag([1, 1, 1, 10])
         cfg.Rb = np.diag([1000, 1])
 
-    def run(env, agent):
-        obs = env.reset()
-
-        while True:
-            env.render()
-
-            action = agent.get_action(obs)
-            next_obs, reward, done = env.step(action)
-
-            agent.update(obs, action, next_obs, reward, done)
-
-            t = obs[0]
-
-            if agent.is_train(t):
-                agent.train(t)
-
-            if agent.is_record(t):
-                record = agent.logger_callback()
-                agent.logger.record(t=t, **record)
-                agent.last_t = t
-
-            if done:
-                break
-
-            obs = next_obs
-
-        env.close()
-        agent.close()
-
     # Init the experiment
     expdir = Path("data/exp6")
     logs.set_logger(expdir, "train.log")
@@ -1044,7 +1075,7 @@ def exp6():
     env = Env()
     agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
-    run(env, agent)
+    env.run(agent)
 
     # Data 002 - Defaut configuration
     load_config()  # Load the experiment default configuration
@@ -1058,7 +1089,7 @@ def exp6():
     env = Env()
     agent = agents.KLMAgent(cfg.Q, cfg.R)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
-    run(env, agent)
+    env.run(agent)
 
 
 def exp6_plot():
@@ -1235,14 +1266,14 @@ def main():
     # exp3()
     # exp3_plot()
 
-    # exp4()
-    # exp4_plot()
+    exp4()
+    exp4_plot()
 
     # exp5()
     # exp5_plot()
 
-    exp6()
-    exp6_plot()
+    # exp6()
+    # exp6_plot()
 
 
 if __name__ == "__main__":
