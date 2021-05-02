@@ -22,7 +22,7 @@ def set_logger(path, file):
 
     # configure logger
     logger = logging.getLogger("logs")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     fh = logging.FileHandler(log_file)
     fh.setLevel(logging.DEBUG)

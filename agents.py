@@ -72,12 +72,13 @@ class SQLAgent(Agent):
         self.W2_his = np.zeros((self.N, self.m, self.n))
         self.W3_his = np.zeros((self.N, self.m, self.m))
 
+        self.P = self.W1 - self.W2.T.dot(np.linalg.pinv(self.W3)).dot(self.K)
+
     def logger_callback(self):
-        P = self.W1 - self.K.T.dot(self.W3).dot(self.K)
         return dict(
             W1=self.W1, W2=self.W2, W3=self.W3, K=self.K,
             W1_his=self.W1_his, W2_his=self.W2_his, W3_his=self.W3_his,
-            P=P,
+            P=self.P,
         )
 
     def train(self, t):
@@ -115,6 +116,7 @@ class SQLAgent(Agent):
             self.W1 = w1.reshape(self.n, self.n, order="F")
             self.W2 = w2.reshape(self.m, self.n, order="F")
             self.W3 = w3.reshape(self.m, self.m, order="F")
+            self.P = self.W1 - self.W2.T.dot(np.linalg.inv(self.W3)).dot(self.K)
 
             self.W1_his[i] = self.W1
             self.W2_his[i] = self.W2
@@ -126,6 +128,7 @@ class SQLAgent(Agent):
             error = ((next_K - self.K)**2).sum()
 
             logger.debug(
+                f"[{type(self).__name__}] "
                 f"Time: {t:5.2f} sec | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "
@@ -146,6 +149,7 @@ class KLMAgent(Agent):
         self.W1 = W1_init if W1_init is not None else np.zeros((n, n))
         self.W2 = W2_init if W2_init is not None else np.zeros((m, n))
         self.K = K_init if K_init is not None else np.zeros((m, n))
+        self.P = self.W1 - self.K.T.dot(self.R).dot(self.K)
 
         self.n, self.m = n, m
 
@@ -153,11 +157,10 @@ class KLMAgent(Agent):
         self.W2_his = np.zeros((self.N, self.m, self.n))
 
     def logger_callback(self):
-        P = self.W1 - self.K.T.dot(self.R).dot(self.K)
         return dict(
             W1=self.W1, W2=self.W2, K=self.K,
             W1_his=self.W1_his, W2_his=self.W2_his,
-            P=P,
+            P=self.P,
         )
 
     def train(self, t):
@@ -193,6 +196,7 @@ class KLMAgent(Agent):
 
             self.W1 = w1.reshape(self.n, self.n, order="F")
             self.W2 = w2.reshape(self.m, self.n, order="F")
+            self.P = self.W1
 
             self.W1_his[i] = self.W1
             self.W2_his[i] = self.W2
@@ -203,6 +207,7 @@ class KLMAgent(Agent):
             error = ((next_K - self.K)**2).sum()
 
             logger.debug(
+                f"[{type(self).__name__}] "
                 f"Time: {t:5.2f} sec | "
                 f"Epoch: {i+1:03d}/{self.N:03d} | "
                 f"Loss: {loss:07.4f} | "

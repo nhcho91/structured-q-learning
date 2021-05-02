@@ -3,6 +3,7 @@ import scipy
 from types import SimpleNamespace as SN
 from pathlib import Path
 import itertools
+import logging
 
 from fym.core import BaseEnv, BaseSystem
 from fym.agents import LQR
@@ -529,6 +530,7 @@ class LearningEnv(BaseEnv):
 
     def run(self, agent):
         obs = self.reset()
+        logger = logging.getLogger("logs")
 
         while True:
             self.render()
@@ -542,6 +544,15 @@ class LearningEnv(BaseEnv):
 
             if agent.is_train(t):
                 agent.train(t)
+
+                PRE = np.linalg.eigvals(agent.P).real
+                CRE = np.linalg.eigvals(self.A - self.B.dot(agent.K)).real
+                logger.info(
+                    f"[{type(agent).__name__}] "
+                    f"Time: {t:5.2f} sec | "
+                    f"Max CRE: {CRE.max():5.2f} | "
+                    f"Min PRE: {PRE.min():5.2f} | "
+                )
 
             if agent.is_record(t):
                 record = agent.logger_callback()
@@ -641,121 +652,191 @@ def exp4():
     logs.set_logger(expdir, "train.log")
     cfg = SN()
 
-    # Data 001 - Default configuration
-    load_config()  # Load the experiment default configuration
-    cfg.dir = Path(expdir, "data-001")
-    cfg.label = "SQL"
+    if False:
+        """
+        Data 001 ~ Data 002
+        These data compares SQL and KLM for wingrock linear model
+        without uncertainty but initial unstable gain.
+        """
+        # Data 001
+        load_config()  # Load the experiment default configuration
+        cfg.dir = Path(expdir, "data-001")
+        cfg.label = "SQL"
+        env = Env()
+        agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F, K_init=cfg.K_init)
+        agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
+        env.run(agent)
 
-    # Setup the agent configuration
+        # Data 002
+        load_config()  # Load the experiment default configuration
+        cfg.dir = Path(expdir, "data-002")
+        cfg.label = "Kleinman"
+        env = Env()
+        agent = agents.KLMAgent(cfg.Q, cfg.R, K_init=cfg.K_init)
+        agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
+        env.run(agent)
+
+        """
+        Data 003 ~ Data 004
+        These data compares the two methods where
+        uncertainty exists and an intinal stable gain is used.
+        """
+        unc = lambda t, x: 0.01 * x[0]**2 + 0.05 * x[1] * x[2]
+        K_init = np.zeros((1, 3))
+
+        # Data 003
+        load_config()  # Load the experiment default configuration
+        cfg.dir = Path(expdir, "data-003")
+        cfg.label = "SQL"
+        cfg.K_init = K_init
+        env = Env()
+        env.x.unc = unc
+        agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F, K_init=cfg.K_init)
+        agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
+        env.run(agent)
+
+        # Data 004
+        load_config()  # Load the experiment default configuration
+        cfg.dir = Path(expdir, "data-004")
+        cfg.label = "Kleinman"
+        cfg.K_init = K_init
+        env = Env()
+        env.x.unc = unc
+        agent = agents.KLMAgent(cfg.Q, cfg.R, K_init=cfg.K_init)
+        agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
+        env.run(agent)
+
+    """
+    Data 005 ~ Data 006
+    These data compares the two methods where
+    uncertainty exists and an intinal unstable gain is used.
+    """
+    unc = lambda t, x: 0.1 * x[0] * np.abs(x[0]) - 0.5 * x[1] * x[2]
+    # unc = lambda t, x: 0
+    K_init = -np.vstack([3, 6, 7]).T
+
+    # Data 005
+    load_config()  # Load the experiment default configuration
+    cfg.dir = Path(expdir, "data-005")
+    cfg.label = "SQL"
+    cfg.K_init = K_init
+    cfg.env_kwargs.max_t = 50
     env = Env()
+    env.x.unc = unc
     agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F, K_init=cfg.K_init)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
     env.run(agent)
 
-    # Data 002 - Defaut configuration
+    # Data 006
     load_config()  # Load the experiment default configuration
-    cfg.dir = Path(expdir, "data-002")
+    cfg.dir = Path(expdir, "data-006")
     cfg.label = "Kleinman"
-
-    # Setup the agent configuration
+    cfg.K_init = K_init
+    cfg.env_kwargs.max_t = 50
     env = Env()
+    env.x.unc = unc
     agent = agents.KLMAgent(cfg.Q, cfg.R, K_init=cfg.K_init)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
     env.run(agent)
 
 
 def exp4_plot():
+    def comp(sqldir, klmdir):
+        # Data 001 ~ Data 002
+        sql = plot.get_data(Path(datadir, sqldir))
+        klm = plot.get_data(Path(datadir, klmdir))
+        data = [sql, klm]
+        # data_na = []
+
+        basestyle = dict(c="k", lw=0.7)
+        refstyle = dict(basestyle, c="r", ls="--")
+        klm_style = dict(basestyle, c="y", ls="-")
+        sql_style = dict(basestyle, c="b", ls="-.")
+        klm.style.update(klm_style)
+        sql.style.update(sql_style)
+        # zlearner_na.style.update(klm_style)
+        # qlearner_na.style.update(sql_style)
+
+        # Figure common setup
+        t_range = (0, sql.info["cfg"].env_kwargs.max_t)
+
+        # All in inches
+        subsize = (4.05, 0.946)
+        width = 4.94
+        top = 0.2
+        bottom = 0.671765
+        left = 0.5487688
+        hspace = 0.2716
+
+        # =================
+        # States and inputs
+        # =================
+        figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
+        plt.figure(figsize=figsize)
+
+        ax = plot.subplot(pos, 0)
+        [plot.vector_by_index(d, "x", 0)[0] for d in data]
+        plt.ylabel(r"$x_1$")
+        # plt.ylim(-2, 2)
+        plt.legend()
+
+        plot.subplot(pos, 1, sharex=ax)
+        [plot.vector_by_index(d, "x", 1) for d in data]
+        plt.ylabel(r"$x_2$")
+        # plt.ylim(-2, 2)
+
+        plot.subplot(pos, 2, sharex=ax)
+        [plot.vector_by_index(d, "x", 2) for d in data]
+        plt.ylabel(r'$x_3$')
+        # plt.ylim(-80, 80)
+
+        plt.xlabel("Time, sec")
+        plt.xlim(t_range)
+
+        for ax in plt.gcf().get_axes():
+            ax.label_outer()
+
+        # ====================
+        # Parameter estimation
+        # ====================
+        figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
+        plt.figure(figsize=figsize)
+
+        ax = plot.subplot(pos, 0)
+        [plot.vector_by_index(d, "u", 0) for d in data]
+        plt.ylabel(r'$\delta_t$')
+
+        plot.subplot(pos, 1, sharex=ax)
+        plot.all(sql, "K", style=dict(refstyle, label="True"))
+        for d in data:
+            plot.all(
+                d, "K", is_agent=True,
+                style=dict(marker="o", markersize=2)
+            )
+        plt.ylabel(r"$\hat{K}$")
+        plt.legend()
+        # plt.ylim(-70, 30)
+
+        plot.subplot(pos, 2, sharex=ax)
+        plot.all(sql, "P", style=dict(sql.style, c="r", ls="--"))
+        for d in data:
+            plot.all(
+                d, "P", is_agent=True,
+                style=dict(marker="o", markersize=2)
+            )
+        plt.ylabel(r"$\hat{P}$")
+        # plt.ylim(-70, 30)
+
+        plt.xlabel("Time, sec")
+        plt.xlim(t_range)
+
+        for ax in plt.gcf().get_axes():
+            ax.label_outer()
+
     datadir = Path("data", "exp4")
-    sql = plot.get_data(Path(datadir, "data-001"))
-    klm = plot.get_data(Path(datadir, "data-002"))
-    data = [sql, klm]
-    # data_na = []
-
-    basestyle = dict(c="k", lw=0.7)
-    refstyle = dict(basestyle, c="r", ls="--")
-    klm_style = dict(basestyle, c="y", ls="-")
-    sql_style = dict(basestyle, c="b", ls="-.")
-    klm.style.update(klm_style)
-    sql.style.update(sql_style)
-    # zlearner_na.style.update(klm_style)
-    # qlearner_na.style.update(sql_style)
-
-    # Figure common setup
-    t_range = (0, sql.info["cfg"].env_kwargs.max_t)
-
-    # All in inches
-    subsize = (4.05, 0.946)
-    width = 4.94
-    top = 0.2
-    bottom = 0.671765
-    left = 0.5487688
-    hspace = 0.2716
-
-    # =================
-    # States and inputs
-    # =================
-    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
-    plt.figure(figsize=figsize)
-
-    ax = plot.subplot(pos, 0)
-    [plot.vector_by_index(d, "x", 0)[0] for d in data]
-    plt.ylabel(r"$x_1$")
-    # plt.ylim(-2, 2)
-    plt.legend()
-
-    plot.subplot(pos, 1, sharex=ax)
-    [plot.vector_by_index(d, "x", 1) for d in data]
-    plt.ylabel(r"$x_2$")
-    # plt.ylim(-2, 2)
-
-    plot.subplot(pos, 2, sharex=ax)
-    [plot.vector_by_index(d, "x", 2) for d in data]
-    plt.ylabel(r'$x_3$')
-    # plt.ylim(-80, 80)
-
-    plt.xlabel("Time, sec")
-    plt.xlim(t_range)
-
-    for ax in plt.gcf().get_axes():
-        ax.label_outer()
-
-    # ====================
-    # Parameter estimation
-    # ====================
-    figsize, pos = plot.posing(3, subsize, width, top, bottom, left, hspace)
-    plt.figure(figsize=figsize)
-
-    ax = plot.subplot(pos, 0)
-    [plot.vector_by_index(d, "u", 0) for d in data]
-    plt.ylabel(r'$\delta_t$')
-
-    plot.subplot(pos, 1, sharex=ax)
-    plot.all(sql, "K", style=dict(refstyle, label="True"))
-    for d in data:
-        plot.all(
-            d, "K", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{K}$")
-    plt.legend()
-    # plt.ylim(-70, 30)
-
-    plot.subplot(pos, 2, sharex=ax)
-    plot.all(sql, "P", style=dict(sql.style, c="r", ls="--"))
-    for d in data:
-        plot.all(
-            d, "P", is_agent=True,
-            style=dict(marker="o", markersize=2)
-        )
-    plt.ylabel(r"$\hat{P}$")
-    # plt.ylim(-70, 30)
-
-    plt.xlabel("Time, sec")
-    plt.xlim(t_range)
-
-    for ax in plt.gcf().get_axes():
-        ax.label_outer()
-
+    # comp("data-001", "data-002")
+    # comp("data-003", "data-004")
+    comp("data-005", "data-006")
     plt.show()
 
 
