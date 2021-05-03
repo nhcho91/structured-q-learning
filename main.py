@@ -1077,6 +1077,7 @@ def exp6():
         def __init__(self):
             super().__init__(**vars(cfg.env_kwargs))
             self.x = MorphingLon()
+            self.PI = BaseSystem()
 
             trims = self.x.get_trim()
             self.trim = {k: v for k, v in zip(["x", "u", "eta"], trims)}
@@ -1086,18 +1087,21 @@ def exp6():
             self.Kopt, self.Popt = LQR.clqr(self.A, self.B, cfg.Q, cfg.R)
             self.behave_K, _ = LQR.clqr(self.A, self.B, cfg.Qb, cfg.Rb)
 
-            self.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
-            self.logger.set_info(cfg=cfg)
+            self.add_noise = True
 
         def behavior(self, t, x):
             un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
-            noise = np.vstack([
-                0.05 * (np.sin(t) + 1) * (np.cos(np.pi * t) + 1),
-                - 1 * np.sin(3.1 * t + 2) + 1 * np.cos(t)**2,
-            ]) * 0.05
 
-            u = un + noise * np.exp(-0.8 * t / cfg.env_kwargs.max_t)
-            return u
+            if self.add_noise:
+                noise = np.vstack([
+                    0.05 * (np.sin(t) + 1) * (np.cos(np.pi * t) + 1),
+                    - 1 * np.sin(3.1 * t + 2) + 1 * np.cos(t)**2,
+                ]) * 0.05
+                noise = noise * np.exp(-0.8 * t / cfg.env_kwargs.max_t)
+            else:
+                noise = 0
+
+            return un + noise
 
         def deriv(self, t, x):
             u = self.behavior(t, x)
@@ -1117,6 +1121,12 @@ def exp6():
             x = self.x.state
             u, eta = self.deriv(t, x)
             self.x.dot = self.x.deriv(x, u, eta)
+            self.PI.dot = self.get_cost(x, u)
+
+        def get_cost(self, x, u):
+            dx = x - self.trim["x"]
+            du = u - self.trim["u"]
+            return 0.5 * (dx.T @ cfg.Q @ dx + du.T @ cfg.R @ du)
 
         def logger_callback(self, i, t, y, *args):
             states = self.observe_dict(y)
@@ -1130,16 +1140,14 @@ def exp6():
         cfg.env_kwargs.max_t = 80
 
         agents.load_config()
+        agents.cfg.CommonAgent.memory_len = 6000
+        agents.cfg.CommonAgent.batch_size = 4000
+        agents.cfg.CommonAgent.train_epoch = 5
+        agents.cfg.CommonAgent.train_start = 40
+        agents.cfg.CommonAgent.train_period = 3
 
-        cfg.Agent = agents.cfg
-        cfg.Agent.CommonAgent.memory_len = 2000
-        cfg.Agent.CommonAgent.batch_size = 1000
-        cfg.Agent.CommonAgent.train_epoch = 20
-        cfg.Agent.CommonAgent.train_start = 10
-        cfg.Agent.CommonAgent.train_period = 3
-
-        cfg.Agent.SQLAgent = SN(**vars(cfg.Agent.CommonAgent))
-        cfg.Agent.KLMAgent = SN(**vars(cfg.Agent.CommonAgent))
+        agents.cfg.SQLAgent = SN(**vars(agents.cfg.CommonAgent))
+        agents.cfg.KLMAgent = SN(**vars(agents.cfg.CommonAgent))
 
         cfg.Q = np.diag([10, 10, 1, 10])
         cfg.R = np.diag([1000, 1])
@@ -1149,6 +1157,24 @@ def exp6():
         cfg.Rb = np.diag([1000, 1])
 
         cfg.K_init = np.zeros((2, 4))
+
+        cfg.test = SN()
+        cfg.test.dataname_learnt = "test-learnt-env.h5"
+        cfg.test.dataname_lqr = "test-lqr-env.h5"
+        cfg.test.initial_perturb = np.vstack((3, 0.1, 0.1, 0.1))
+
+    def test(env):
+        env.reset()
+
+        while True:
+            env.render()
+
+            *_, done = env.step(None)
+
+            if done:
+                break
+
+        env.close()
 
     # Init the experiment
     expdir = Path("data/exp6")
@@ -1160,81 +1186,147 @@ def exp6():
     This sub-experiment compares SQL and KLM for morphing aircraft
     using an initial unstable policy
     """
-    # Data 001
+    # ------ Data 001 ------ #
     load_config()  # Load the experiment default configuration
     cfg.dir = Path(expdir, "data-001")
     cfg.label = "SQL"
-    agents.load_config()
-    cfg.SQLAgent = agents.cfg.SQLAgent
+
+    # ------ Train ------ #
     env = Env()
     agent = agents.SQLAgent(cfg.Q, cfg.R, cfg.F)
+    # Set loggeres
+    env.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
+    env.logger.set_info(cfg=cfg)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
     env.run(agent)
 
-    # Data 002
+    # ------ Test ------ #
+    env = Env()
+    env.logger = fym.logging.Logger(Path(cfg.dir, cfg.test.dataname_learnt))
+    env.behave_K = fym.logging.load(Path(cfg.dir, "sql-agent.h5"))["K"][-1]
+    env.add_noise = False
+    env.x.initial_state = env.trim["x"] + cfg.test.initial_perturb
+    test(env)
+
+    env = Env()
+    env.logger = fym.logging.Logger(Path(cfg.dir, cfg.test.dataname_lqr))
+    env.behave_K = env.Kopt
+    env.add_noise = False
+    env.x.initial_state = env.trim["x"] + cfg.test.initial_perturb
+    test(env)
+
+    # ------ Data 002 ------ #
     load_config()  # Load the experiment default configuration
     cfg.dir = Path(expdir, "data-002")
     cfg.label = "Kleinman"
-    agents.load_config()
-    cfg.KLMAgent = agents.cfg.KLMAgent
+
+    # ------ Train ------ #
     env = Env()
     agent = agents.KLMAgent(cfg.Q, cfg.R)
+    # Set loggeres
+    env.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
+    env.logger.set_info(cfg=cfg)
     agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
     env.run(agent)
 
+    # ------ Test ------ #
+    env = Env()
+    env.logger = fym.logging.Logger(Path(cfg.dir, cfg.test.dataname_learnt))
+    env.behave_K = fym.logging.load(Path(cfg.dir, "klm-agent.h5"))["K"][-1]
+    env.add_noise = False
+    env.x.initial_state = env.trim["x"] + cfg.test.initial_perturb
+    test(env)
+
 
 def exp6_plot():
-    datadir = Path("data", "exp6")
-    sql = plot.get_data(Path(datadir, "data-001"))
-    klm = plot.get_data(Path(datadir, "data-002"))
-    data = [sql, klm]
-    # data_na = []
+    def get_data(name, style=dict(), with_info=False):
+        path = Path(datadir, name)
+        style = datastyle | style
 
+        dataset = SN()
+        if with_info:
+            data, info = fym.logging.load(path, with_info=with_info)
+            dataset.info = info
+            dataset.style = style | dict(label=info["cfg"].label)
+        else:
+            data = fym.logging.load(path)
+            dataset.style = style
+        dataset.data = data
+        return dataset
+
+    # ------ Exp Setup ------ #
+    expdir = Path("data", "exp6")
     basestyle = dict(c="k", lw=0.7)
-    refstyle = dict(basestyle, c="r", ls="--")
-    klm_style = dict(basestyle, c="y", ls="-")
-    sql_style = dict(basestyle, c="b", ls="-.")
-    klm.style.update(klm_style)
-    sql.style.update(sql_style)
-    # zlearner_na.style.update(klm_style)
-    # qlearner_na.style.update(sql_style)
+    refstyle = basestyle | dict(c="r", ls="--")
+    sql_style = basestyle | dict(c="b", ls="-.")
+    klm_style = basestyle | dict(c="g", ls="-.")
+    test_style = basestyle | dict(c="k", ls="--")
+
+    # ------ Data 001 ------ #
+    datadir = Path(expdir, "data-001")
+    datastyle = sql_style
+    sql_env = get_data("env.h5", with_info=True)
+    sql_agent = get_data("sql-agent.h5", style=sql_env.style)
+    sql_test = get_data("test-learnt-env.h5", style=sql_env.style)
+
+    datastyle = test_style
+    lqr_test = get_data("test-lqr-env.h5", style=dict(label="LQR"))
+
+    # ------ Data 002 ------ #
+    datadir = Path(expdir, "data-002")
+    datastyle = klm_style
+    klm_env = get_data("env.h5", with_info=True)
+    klm_agent = get_data("klm-agent.h5", style=klm_env.style)
+    klm_test = get_data("test-learnt-env.h5", style=klm_env.style)
+
+    data_train = [sql_env, klm_env]
+    data_agent = [sql_agent, klm_agent]
+    data_test = [sql_test, klm_test, lqr_test]
 
     # Figure common setup
-    t_range = (0, sql.info["cfg"].env_kwargs.max_t)
+    t_range = (0, sql_env.info["cfg"].env_kwargs.max_t)
 
     # All in inches
     subsize = (4.05, 0.946)
-    width = 4.94
-    top = 0.2
-    bottom = 0.671765
-    left = 0.5487688
+    width, top, bottom, left = (4.94, 0.2, 0.671765, 0.5487688)
     hspace = 0.2716
 
-    # =================
-    # States and inputs
-    # =================
-    figsize, pos = plot.posing(4, subsize, width, top, bottom, left, hspace)
+    # ============================
+    # States and inputs (Training)
+    # ============================
+    figsize, pos = plot.posing(6, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
     ax = plot.subplot(pos, 0)
-    [plot.vector_by_index(d, "x", 0)[0] for d in data]
-    plt.ylabel(r"$V_T$")
-    # plt.ylim(-2, 2)
+    [plot.vector_by_index(d, "x", 0)[0] for d in data_train]
+    plt.ylabel(r"$V_T$, m/s")
+    # plt.ylim(19, 23)
     plt.legend()
 
     plot.subplot(pos, 1, sharex=ax)
-    [plot.vector_by_index(d, "x", 1) for d in data]
-    plt.ylabel(r"$\alpha$")
-    # plt.ylim(-2, 2)
+    [plot.vector_by_index(d, "x", 1, mult=np.rad2deg(1)) for d in data_train]
+    plt.ylabel(r"$\alpha$, deg")
+    # plt.ylim(-5, 8)
 
     plot.subplot(pos, 2, sharex=ax)
-    [plot.vector_by_index(d, "x", 2) for d in data]
-    plt.ylabel(r'$q$')
-    # plt.ylim(-80, 80)
+    [plot.vector_by_index(d, "x", 2, mult=np.rad2deg(1)) for d in data_train]
+    plt.ylabel(r"$q$, deg/s")
+    # plt.ylim(-50, 50)
 
     plot.subplot(pos, 3, sharex=ax)
-    [plot.vector_by_index(d, "x", 3) for d in data]
-    plt.ylabel(r'$\gamma$')
+    [plot.vector_by_index(d, "x", 3, mult=np.rad2deg(1)) for d in data_train]
+    plt.ylabel(r"$\gamma$, deg")
+    # plt.ylim(-5, 23)
+
+    plot.subplot(pos, 4, sharex=ax)
+    [plot.vector_by_index(d, "u", 0) for d in data_train]
+    plt.ylabel(r"$\delta_t$")
+    # plt.ylim(0, 0.2)
+
+    plot.subplot(pos, 5, sharex=ax)
+    [plot.vector_by_index(d, "u", 1, mult=np.rad2deg(1)) for d in data_train]
+    plt.ylabel(r'$\delta_e$, deg')
+    # plt.ylim(-15, 5)
 
     plt.xlabel("Time, sec")
     plt.xlim(t_range)
@@ -1242,43 +1334,96 @@ def exp6_plot():
     for ax in plt.gcf().get_axes():
         ax.label_outer()
 
-    # ====================
-    # Parameter estimation
-    # ====================
-    figsize, pos = plot.posing(4, subsize, width, top, bottom, left, hspace)
+    # ===============================
+    # Parameter estimation (Training)
+    # ===============================
+    figsize, pos = plot.posing(2, subsize, width, top, bottom, left, hspace)
     plt.figure(figsize=figsize)
 
-    ax = plot.subplot(pos, 0)
-    [plot.vector_by_index(d, "u", 0) for d in data]
-    plt.ylabel(r'$\delta_t$')
-
-    plot.subplot(pos, 1, sharex=ax)
-    [plot.vector_by_index(d, "u", 1) for d in data]
-    plt.ylabel(r'$\delta_e$')
-
-    plot.subplot(pos, 2, sharex=ax)
-    plot.all(sql, "K", style=dict(refstyle, label="True"))
-    for d in data:
+    plot.subplot(pos, 0, sharex=ax)
+    plot.all(sql_env, "K", style=dict(refstyle, label="True"))
+    for d in data_agent:
         plot.all(
             d, "K", is_agent=True,
             style=dict(marker="o", markersize=2)
         )
     plt.ylabel(r"$\hat{K}$")
     plt.legend()
-    # plt.ylim(-70, 30)
+    plt.ylim(-15, 7)
 
-    plot.subplot(pos, 3, sharex=ax)
-    plot.all(sql, "P", style=dict(sql.style, c="r", ls="--"))
-    for d in data:
+    plot.subplot(pos, 1, sharex=ax)
+    plot.all(sql_env, "P", style=dict(sql_env.style, c="r", ls="--"))
+    for d in data_agent:
         plot.all(
             d, "P", is_agent=True,
             style=dict(marker="o", markersize=2)
         )
     plt.ylabel(r"$\hat{P}$")
-    # plt.ylim(-70, 30)
+    plt.ylim(-12, 28)
 
     plt.xlabel("Time, sec")
     plt.xlim(t_range)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    # ========================
+    # States and inputs (Test)
+    # ========================
+    figsize, pos = plot.posing(6, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    ax = plot.subplot(pos, 0)
+    [plot.vector_by_index(d, "x", 0)[0] for d in data_test]
+    plt.ylabel(r"$V_T$, m/s")
+    plt.ylim(19, 23)
+    plt.legend()
+
+    plot.subplot(pos, 1, sharex=ax)
+    [plot.vector_by_index(d, "x", 1, mult=np.rad2deg(1)) for d in data_test]
+    plt.ylabel(r"$\alpha$, deg")
+    plt.ylim(-5, 8)
+
+    plot.subplot(pos, 2, sharex=ax)
+    [plot.vector_by_index(d, "x", 2, mult=np.rad2deg(1)) for d in data_test]
+    plt.ylabel(r"$q$, deg/s")
+    plt.ylim(-50, 50)
+
+    plot.subplot(pos, 3, sharex=ax)
+    [plot.vector_by_index(d, "x", 3, mult=np.rad2deg(1)) for d in data_test]
+    plt.ylabel(r"$\gamma$, deg")
+    plt.ylim(-5, 23)
+
+    plot.subplot(pos, 4, sharex=ax)
+    [plot.vector_by_index(d, "u", 0) for d in data_test]
+    plt.ylabel(r"$\delta_t$")
+    plt.ylim(0, 0.2)
+
+    plot.subplot(pos, 5, sharex=ax)
+    [plot.vector_by_index(d, "u", 1, mult=np.rad2deg(1)) for d in data_test]
+    plt.ylabel(r'$\delta_e$, deg')
+    plt.ylim(-15, 5)
+
+    plt.xlabel("Time, sec")
+    plt.xlim(0, 5)
+
+    for ax in plt.gcf().get_axes():
+        ax.label_outer()
+
+    # =================
+    # Performance Index
+    # =================
+    figsize, pos = plot.posing(1, subsize, width, top, bottom, left, hspace)
+    plt.figure(figsize=figsize)
+
+    plot.subplot(pos, 0)
+    [plot.vector_by_index(d, "PI", 0)[0] for d in data_test]
+    plt.ylabel(r"Performance Index")
+    plt.ylim(-1, 20)
+    plt.legend()
+
+    plt.xlabel("Time, sec")
+    plt.xlim(0, 5)
 
     for ax in plt.gcf().get_axes():
         ax.label_outer()
@@ -1341,8 +1486,11 @@ def exp6_plot():
     plt.figure(1)
     plt.savefig(Path(imgdir, "figure_1.pdf"), bbox_inches="tight")
 
-    # plt.figure(2)
-    # plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
+    plt.figure(2)
+    plt.savefig(Path(imgdir, "figure_2.pdf"), bbox_inches="tight")
+
+    plt.figure(3)
+    plt.savefig(Path(imgdir, "figure_3.pdf"), bbox_inches="tight")
 
     plt.show()
 
@@ -1363,7 +1511,7 @@ def main():
     # exp5()
     # exp5_plot()
 
-    exp6()
+    # exp6()
     exp6_plot()
 
 

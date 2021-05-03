@@ -4,17 +4,17 @@ from types import SimpleNamespace as SN
 import fym
 
 
-def get_data(datadir):
-    data = SN()
-    env, info = fym.logging.load(list(datadir.glob("*env.h5"))[0],
-                                 with_info=True)
-    data.env = env
-    data.info = info
-    agentlist = list(datadir.glob("*agent.h5"))
-    if agentlist != []:
-        data.agent = fym.logging.load(agentlist[0])
-    data.style = dict(label=info["cfg"].label)
-    return data
+def get_data(path, style=dict(), with_info=False):
+    dataset = SN()
+    if with_info:
+        data, info = fym.logging.load(path, with_info=with_info)
+        dataset.info = info
+        dataset.style = style | dict(label=info["cfg"].label)
+    else:
+        data = fym.logging.load(path)
+        dataset.style = style
+    dataset.data = data
+    return dataset
 
 
 def posing(n, subsize, width, top, bottom, left, hspace):
@@ -38,83 +38,83 @@ def subplot(pos, index, **kwargs):
     return plt.subplot(digit, position=pos[index], **kwargs)
 
 
-def eigvals(data, internal=True):
-    plt.fill_between(data.agent["t"],
-                     data.agent["eigs"][:, -1],
-                     data.agent["eigs"][:, 0],
+def eigvals(dataset, internal=True):
+    plt.fill_between(dataset.data["t"],
+                     dataset.data["eigs"][:, -1],
+                     dataset.data["eigs"][:, 0],
                      # **fill_style)
-                     facecolor=data.style["c"],
+                     facecolor=dataset.style["c"],
                      alpha=0.3)
-    plt.plot(data.agent["t"], data.agent["eigs"][:, [0, -1]],
-             **dict(data.style, alpha=0.7))
+    plt.plot(dataset.data["t"], dataset.data["eigs"][:, [0, -1]],
+             **dict(dataset.style, alpha=0.7))
     if internal:
-        plt.plot(data.agent["t"], data.agent["eigs"][:, 1:-1],
-                 **dict(data.style, label="_", ls="--", alpha=0.5))
+        plt.plot(dataset.data["t"], dataset.data["eigs"][:, 1:-1],
+                 **dict(dataset.style, label="_", ls="--", alpha=0.5))
 
 
-def tracking_error(data):
-    plt.plot(data.env["t"],
-             np.linalg.norm(data.env["e"].squeeze(), axis=1),
-             **data.style)
+def tracking_error(dataset):
+    plt.plot(dataset.data["t"],
+             np.linalg.norm(dataset.data["e"].squeeze(), axis=1),
+             **dataset.style)
 
 
-def estimation_error(data):
-    plt.plot(data.env["t"],
+def estimation_error(dataset):
+    plt.plot(dataset.data["t"],
              np.linalg.norm(
-                 (data.env["W"] - data.env["Wcirc"]).squeeze(), axis=1),
-             **data.style)
+                 (dataset.data["W"] - dataset.data["Wcirc"]).squeeze(), axis=1),
+             **dataset.style)
 
 
-def h(data):
-    plt.plot(data.agent["t"], data.agent["h"].squeeze(),
-             **dict(data.style))
+def h(dataset):
+    plt.plot(dataset.data["t"], dataset.data["h"].squeeze(),
+             **dict(dataset.style))
 
 
-def parameters(data, index=None):
-    lines = plt.plot(data.env["t"], data.env["W"][:, index or slice(None), 0], **data.style)
+def parameters(dataset, index=None):
+    lines = plt.plot(dataset.data["t"], dataset.data["W"][:, index or slice(None), 0], **dataset.style)
     plt.setp(lines[1:], label=None)
 
 
-def states_and_input(data, key, index):
-    return plt.plot(data.env["t"], data.env[key][:, index], **data.style)
+def states_and_input(dataset, key, index):
+    return plt.plot(dataset.data["t"], dataset.data[key][:, index], **dataset.style)
 
 
-def performance_index(data):
-    plt.plot(data.env["t"], data.env["J"][:, 0, 0], **data.style)
+def performance_index(dataset):
+    plt.plot(dataset.data["t"], dataset.data["J"][:, 0, 0], **dataset.style)
 
 
-def HJB_error(data):
-    plt.plot(data.env["t"], data.env["e_HJB"], **data.style)
+def HJB_error(dataset):
+    plt.plot(dataset.data["t"], dataset.data["e_HJB"], **dataset.style)
 
 
-def outputs(data, key, index, style=None):
-    y = data.env[key][:, index]
+def outputs(dataset, key, index, style=None):
+    y = dataset.data[key][:, index]
 
     if index < 3:
         y = np.rad2deg(y)
 
-    return plt.plot(data.env["t"], y, **style or data.style)
+    return plt.plot(dataset.data["t"], y, **style or dataset.style)
 
 
-def vector_by_index(data, key, index, mult=1, style=None):
-    y = data.env[key][:, index, 0] * mult
-    return plt.plot(data.env["t"], y, **style or data.style)
+def vector_by_index(dataset, key, index, mult=1, style=None):
+    y = dataset.data[key][:, index, 0] * mult
+    return plt.plot(dataset.data["t"], y, **style or dataset.style)
 
 
-def all(data, key, style=dict(), is_agent=False):
-    style = dict(data.style, **style)
+def all(dataset, key, style=dict(), is_agent=False):
+    style = dict(dataset.style, **style)
     if is_agent:
-        data = data.agent
+        dataset = dataset.data
     else:
-        data = data.env
+        dataset = dataset.data
     lines = plt.plot(
-        data["t"], data[key].reshape(data["t"].shape[0], -1), **style)
+        dataset["t"], dataset[key].reshape(dataset["t"].shape[0], -1), **style)
     plt.setp(lines[1:], label=None)
     return lines
 
 
-def matrix_by_index(data, key, index, style=None):
-    style = dict(data.style, **style)
-    lines = plt.plot(data.env["t"], data.env[key][:, index, index], **style)
+def matrix_by_index(dataset, key, index, style=None):
+    style = dict(dataset.style, **style)
+    lines = plt.plot(dataset.data["t"], dataset.data[key][:, index, index], **style)
     plt.setp(lines[1:], label=None)
     return lines
