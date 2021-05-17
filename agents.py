@@ -81,6 +81,58 @@ class SQLAgent(Agent):
             P=self.P,
         )
 
+    def step(self, batch):
+        y_stack = []
+        phi_stack = []
+        K = self.K
+        loss = 0
+
+        for b in batch:
+            x, u, xdot = b
+
+            lxu = 0.5 * (x.T.dot(self.Q).dot(x) + u.T.dot(self.R).dot(u))
+
+            udot = self.F.dot(u + K.dot(x)) - K.dot(xdot)
+            phi1 = 0.5 * (np.kron(x, xdot) + np.kron(xdot, x))
+            phi2 = np.kron(xdot, u) + np.kron(x, udot)
+            phi3 = 0.5 * (np.kron(u, udot) + np.kron(udot, u))
+            phi = np.vstack((phi1, phi2, phi3))
+
+            y = - lxu
+
+            y_stack.append(y)
+            phi_stack.append(phi.T)
+
+        Y = np.vstack(y_stack)
+        Phi = np.vstack(phi_stack)
+
+        w1s = self.n * self.n
+        w2s = self.n * self.m
+
+        w = np.linalg.pinv(Phi).dot(Y)
+        w1, w2, w3 = w[:w1s], w[w1s:w1s + w2s], w[w1s + w2s:]
+
+        W1 = w1.reshape(self.n, self.n, order="F")
+        W2 = w2.reshape(self.m, self.n, order="F")
+        W3 = w3.reshape(self.m, self.m, order="F")
+        P = W1 - W2.T.dot(np.linalg.inv(W3)).dot(W2)
+
+        next_K = np.linalg.inv(W3).dot(W2)
+
+        loss = ((Y - Phi.dot(w))**2).sum()
+        error = ((next_K - K)**2).sum()
+
+        logger.debug(
+            f"[{type(self).__name__}] "
+            f"Loss: {loss:07.4f} | "
+            f"Error: {error:07.4f}"
+        )
+
+        # Policy Improvement
+        self.K = next_K
+
+        return dict(K=K, W1=W1, W2=W2, W3=W3, next_K=next_K, P=P)
+
     def train(self, t):
         for i in range(self.N):
             y_stack = []
