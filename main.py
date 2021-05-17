@@ -4,6 +4,8 @@ from types import SimpleNamespace as SN
 from pathlib import Path
 import itertools
 import logging
+import random
+import os
 
 from fym.core import BaseEnv, BaseSystem
 from fym.agents import LQR
@@ -1067,7 +1069,7 @@ def exp5_plot():
 
 
 def exp6():
-    """This experiment uses a complex quadrotor model to learn the optimal
+    """This experiment uses a complex aircraft model to learn the optimal
     policy with arbitrary initial policy. The morphing aircraft in ``fym``
     is used.
     """
@@ -1090,15 +1092,17 @@ def exp6():
             self.add_noise = True
 
         def behavior(self, t, x):
-            un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
+            # un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
 
             if self.add_noise:
+                un = self.trim["u"]
                 noise = np.vstack([
-                    0.05 * (np.sin(t) + 1) * (np.cos(np.pi * t) + 1),
-                    - 1 * np.sin(3.1 * t + 2) + 1 * np.cos(t)**2,
-                ]) * 0.05
+                    0.2 * (np.sin(t) + 0.5) * (np.cos(np.pi * t) + 0.5),
+                    - 1 * np.sin(0.31 * t + 2) + 1 * np.cos(2 * t),
+                ]) * 0.02
                 noise = noise * np.exp(-0.8 * t / cfg.env_kwargs.max_t)
             else:
+                un = self.trim["u"] - self.behave_K.dot(x - self.trim["x"])
                 noise = 0
 
             return un + noise
@@ -1137,14 +1141,14 @@ def exp6():
     def load_config():
         cfg.env_kwargs = SN()
         cfg.env_kwargs.dt = 0.01
-        cfg.env_kwargs.max_t = 80
+        cfg.env_kwargs.max_t = 40
 
         agents.load_config()
-        agents.cfg.CommonAgent.memory_len = 6000
-        agents.cfg.CommonAgent.batch_size = 4000
-        agents.cfg.CommonAgent.train_epoch = 5
-        agents.cfg.CommonAgent.train_start = 40
-        agents.cfg.CommonAgent.train_period = 3
+        agents.cfg.CommonAgent.memory_len = 4000
+        agents.cfg.CommonAgent.batch_size = 2000
+        agents.cfg.CommonAgent.train_epoch = 100
+        agents.cfg.CommonAgent.train_start = 20
+        agents.cfg.CommonAgent.train_period = 2
 
         agents.cfg.SQLAgent = SN(**vars(agents.cfg.CommonAgent))
         agents.cfg.KLMAgent = SN(**vars(agents.cfg.CommonAgent))
@@ -1197,7 +1201,7 @@ def exp6():
     # Set loggeres
     env.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
     env.logger.set_info(cfg=cfg)
-    agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"))
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "sql-agent.h5"), max_len=1)
     env.run(agent)
 
     # ------ Test ------ #
@@ -1226,7 +1230,7 @@ def exp6():
     # Set loggeres
     env.logger = fym.logging.Logger(Path(cfg.dir, "env.h5"))
     env.logger.set_info(cfg=cfg)
-    agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"))
+    agent.logger = fym.logging.Logger(Path(cfg.dir, "klm-agent.h5"), max_len=1)
     env.run(agent)
 
     # ------ Test ------ #
@@ -1495,6 +1499,377 @@ def exp6_plot():
     plt.show()
 
 
+def exp7():
+    """Experiment 7
+    This experiment demonstrates the performance of SQL
+    for an unknown quadrotor model.
+
+    The LQR controller is designed based on
+    [Dydek et al., 2013](doi.org/10.1109/TCST.2012.2200104).
+    The performance outputs are ``pos`` and ``psi``.
+    The observed states are ``pos``, ``angle`` and their derivatives.
+    where the controller takes angles and altitude and returns thrusts of
+    each rotor.
+    """
+    from fym.models.quadrotor import Quadrotor
+
+    class Env(BaseEnv):
+        def __init__(self):
+            super().__init__(**vars(cfg.env.kwargs))
+            self.plant = Quadrotor(**vars(cfg.quad.init))
+
+            # Get the linear model
+            self.xtrim, self.utrim = self.get_trims(alt=1)
+            self.A = jacob_analytic(self.deriv, 0)(self.xtrim, self.utrim)
+            self.B = jacob_analytic(self.deriv, 1)(self.xtrim, self.utrim)
+
+            # Get the optimal gain
+            self.K, self.P = LQR.clqr(self.A, self.B, cfg.agent.Q, cfg.agent.R)
+
+            # Base controller (returns 0)
+            gain = np.zeros_like(self.B.T)
+            self.controller = NoisyLQR(gain, self.xtrim, self.utrim)
+
+        def set_random_behavior(self):
+            A = self.A + 0 * np.random.randn(*self.A.shape)
+            B = self.B + 0 * np.random.randn(*self.B.shape)
+            Q = np.diag(np.random.rand(cfg.agent.Q.shape[0]))
+            R = np.diag(np.random.rand(cfg.agent.R.shape[0]))
+            # R = np.random.rand() * cfg.agent.R
+            gain, _ = LQR.clqr(A, B, Q, R)
+            amp, freq, phase = np.random.rand(3, 4, 1)
+            noise = lambda t: 0.5 * amp * np.sin(freq * t + phase)
+            self.controller = NoisyLQR(gain, self.xtrim, self.utrim, noise)
+
+            cfg.behavior = (gain, amp, freq, phase)
+
+        def step(self):
+            *_, done = self.update()
+            return done
+
+        def set_dot(self, t):
+            plant_states = self.plant.observe_list()
+            *_, u = self._calc(t, plant_states)
+            self.plant.set_dot(t, u)
+
+        def get_trims(self, alt=1):
+            pos = np.vstack((0, 0, -alt))
+            vel = angle = omega = np.zeros((3, 1))
+            u = np.vstack([self.plant.m * self.plant.g / 4] * 4)
+            return np.vstack((pos, vel, angle, omega)), u
+
+        def omega2dangle(self, omega, phi, theta):
+            dangle = np.array([
+                [1, np.sin(phi)*np.tan(theta), np.cos(phi)*np.tan(theta)],
+                [0, np.cos(phi), -np.sin(phi)],
+                [0, np.sin(phi)/np.cos(theta), np.cos(phi)/np.cos(theta)]
+            ]) @ omega
+            return dangle
+
+        def deriv(self, x, u):
+            pos, vel, angle, omega = x[:3], x[3:6], x[6:9], x[9:12]
+            R = self.plant.angle2R(angle)
+            dpos, dvel, _, domega = self.plant.deriv(pos, vel, R, omega, u)
+            phi, theta, _ = angle.ravel()
+            dangle = self.omega2dangle(omega, phi, theta)
+            xdot = np.vstack((dpos, dvel, dangle, domega))
+            return xdot
+
+        def eager_stop(self, t_hist, ode_hist):
+            done = False
+            for i, (t, y) in enumerate(zip(t_hist, ode_hist)):
+                plant_states = self.plant.observe_list(y[self.plant.flat_index])
+                angle = np.vstack(self.plant.R2angle(plant_states[2]))
+                if np.any(np.abs(angle) > cfg.quad.angle_lim):
+                    t_hist = t_hist[:i+1]
+                    ode_hist = ode_hist[:i+1]
+                    done = True
+                    breakpoint()
+                    break
+            return t_hist, ode_hist, done
+
+        def logger_callback(self, i, t, y, *args):
+            state_dict = self.observe_dict(y)
+            plant_states = self.plant.observe_list(y[self.plant.flat_index])
+            dx, du, xdot, u = self._calc(t, plant_states)
+            return dict(t=t, dx=dx, du=du, xdot=xdot, u=u, **state_dict)
+
+        def _calc(self, t, plant_states):
+            """states: list, returns (dx, du, xdot) for training"""
+            pos, vel, R, omega = plant_states
+            angle = np.vstack(self.plant.R2angle(R))
+            x = np.vstack((pos, vel, angle, omega))
+            u = self.controller(t, x)
+            xdot = self.deriv(x, u)
+            dx = x - self.xtrim
+            du = u - self.utrim
+            return dx, du, xdot, u
+
+    class NoisyLQR:
+        def __init__(self, gain, xtrim, utrim, noise=lambda t: 0):
+            """gain: constant gain, noise: function of time"""
+            self.gain = gain
+            self.xtrim = xtrim
+            self.utrim = utrim
+            self.noise = noise
+
+        def __call__(self, t, x):
+            return self.utrim - self.gain @ (x - self.xtrim) + self.noise(t)
+
+    def sample(env, naming_rule):
+        for i in range(cfg.sample.n_trial):
+            env.logger = fym.logging.Logger(
+                Path(cfg.path.sample, naming_rule % i))
+
+            env.set_random_behavior()
+
+            env.logger.set_info(trial=i, cfg=cfg)
+            env.reset()
+
+            while True:
+                env.render()
+                done = env.step()
+
+                if done:
+                    break
+
+            env.close()
+
+    def train():
+        logger = logging.getLogger("logs")
+
+        agents.load_config()
+        agent = agents.SQLAgent(
+            Q=cfg.agent.Q, R=cfg.agent.R, F=-np.eye(cfg.agent.R.shape[0]))
+        agent.logger = fym.logging.Logger(Path(cfg.path.train, "result.h5"))
+
+        # Random sample N data
+        memory = []
+        for path in cfg.path.sample.glob("*.h5"):
+            data, info = fym.logging.load(path, with_info=True)
+            memory += [
+                (dx, du, xdot)
+                for dx, du, xdot
+                in zip(data["dx"], data["du"], data["xdot"])]
+
+        batch = random.sample(memory, int(len(memory) / 2))
+        for i in range(cfg.train.n_step):
+            info = agent.step(batch)
+            agent.logger.record(i=i, **info)
+
+            # P real eigenvalues
+            PRE = np.linalg.eigvals(info["P"]).real
+            # CRE = np.linalg.eigvals(self.A - self.B.dot(agent.K)).real
+            logger.info(
+                f"[{type(agent).__name__}] "
+                f"Iter: {i} | "
+                f"Min PRE: {PRE.min():.2e} | "
+                f"no. PNE: {len(PRE[PRE < 0])} / {len(PRE)} | "
+            )
+
+        agent.logger.close()
+
+    def test(train_path):
+        cfg.quad.init = SN(**vars(cfg.quad.init) | vars(cfg.test.init))
+        cfg.env.kwargs = SN(**vars(cfg.env.kwargs) | vars(cfg.test.kwargs))
+
+        env = Env()
+        env.logger = fym.logging.Logger(Path(cfg.path.test, "env.h5"))
+
+        train_data = fym.logging.load(train_path)
+        env.controller = NoisyLQR(train_data["K"][-1], env.xtrim, env.utrim)
+
+        env.logger.set_info(cfg=cfg)
+        env.reset()
+
+        while True:
+            env.render()
+            done = env.step()
+
+            if done:
+                break
+
+        env.close()
+
+    def load_config():
+        cfg.path = SN()
+        cfg.path.exp = Path("data", "exp7")
+        cfg.path.sample = Path(cfg.path.exp, "sampled_data")
+        cfg.path.train = Path(cfg.path.exp, "train")
+        cfg.path.test = Path(cfg.path.exp, "test")
+
+        cfg.env = SN()
+        cfg.env.kwargs = SN()
+        cfg.env.kwargs.dt = 10
+        cfg.env.kwargs.max_t = 10
+        cfg.env.kwargs.solver = "odeint"
+        cfg.env.kwargs.ode_step_len = 1000
+
+        cfg.quad = SN()
+        cfg.quad.init = SN()
+        cfg.quad.init.pos = np.vstack((0, 0, -1))
+        cfg.quad.init.vel = np.zeros((3, 1))
+        cfg.quad.init.R = np.eye(3)
+        cfg.quad.init.omega = np.zeros((3, 1))
+        cfg.quad.angle_lim = np.deg2rad([30, 30, np.inf])
+
+        cfg.sample = SN()
+        cfg.sample.n_trial = 20
+
+        cfg.agent = SN()
+        cfg.agent.Q = np.diag([1]*3 + [0]*3 + [1]*3 + [0]*3)
+        cfg.agent.R = np.diag([10, 10, 10, 10])
+
+        cfg.train = SN()
+        cfg.train.n_batch = 10000
+        cfg.train.n_step = 1000
+
+        cfg.test = SN()
+        cfg.test.init = SN()
+        cfg.test.init.pos = np.vstack((0.1, 0.1, -0.9))
+        cfg.test.init.omega = np.vstack((0.1, 0.1, -0.1))
+        cfg.test.kwargs = SN()
+        cfg.test.kwargs.dt = 10
+        cfg.test.kwargs.max_t = 10
+        cfg.test.kwargs.solver = "odeint"
+        cfg.test.kwargs.ode_step_len = 1000
+
+    cfg = SN()
+    load_config()
+    random.seed(0)
+    np.random.seed(0)
+
+    # ------ Sampling ------#
+    # env = Env()
+    # sample(env, "sample_%02d.h5")
+
+    # ------ Traning ------#
+    # logs.set_logger(cfg.path.exp, "train.log")
+    # train()
+
+    # ------ Test ------#
+    test(train_path=Path(cfg.path.train, "result.h5"))
+
+
+def exp7_plot():
+    from matplotlib.patches import Circle
+    import mpl_toolkits.mplot3d.art3d as art3d
+
+    class Quadrotor:
+        def __init__(self, ax):
+            # Parameters
+            d = 0.315
+            r = 0.15
+
+            # Body
+            body_segs = np.array([
+                [[d, 0, 0], [0, 0, 0]],
+                [[-d, 0, 0], [0, 0, 0]],
+                [[0, d, 0], [0, 0, 0]],
+                [[0, -d, 0], [0, 0, 0]]
+            ])
+            colors = (
+                (1, 0, 0, 1),
+                (0, 0, 1, 1),
+                (0, 0, 1, 1),
+                (0, 0, 1, 1),
+            )
+
+            self.body = art3d.Line3DCollection(
+                body_segs, colors=colors, linewidth=3)
+
+            kwargs = dict(radius=r, ec="k", fc="k", alpha=0.3)
+            self.rotors = [
+                Circle((d, 0), **kwargs),
+                Circle((0, d), **kwargs),
+                Circle((-d, 0), **kwargs),
+                Circle((0, -d), **kwargs),
+            ]
+
+            ax.add_collection3d(self.body)
+            for rotor in self.rotors:
+                ax.add_patch(rotor)
+                art3d.pathpatch_2d_to_3d(rotor, z=0)
+
+            self.body._base = self.body._segments3d
+            for rotor in self.rotors:
+                rotor._segment3d = np.array(rotor._segment3d)
+                rotor._center = np.array(rotor._center + (0,))
+                rotor._base = rotor._segment3d
+
+        def set(self, pos, R=np.eye(3)):
+            # Rotate
+            self.body._segments3d = np.array([
+                R @ point
+                for point in self.body._base.reshape(-1, 3)
+            ]).reshape(self.body._base.shape)
+
+            for rotor in self.rotors:
+                rotor._segment3d = np.array([
+                    R @ (point - rotor._center) + rotor._center
+                    for point in rotor._base
+                ])
+
+            # Translate
+            self.body._segments3d = self.body._segments3d + pos
+
+            for rotor in self.rotors:
+                rotor._segment3d = rotor._segment3d + pos
+
+    # ------ Set paths ------ #
+    expdir = Path("data", "exp7")
+
+    imgdir = Path("img", expdir.relative_to("data"))
+    imgdir.mkdir(exist_ok=True)
+
+    tmpdir = Path(imgdir, "_tmp")
+    tmpdir.mkdir(exist_ok=True)
+
+    # ------ Sampled data ------ #
+    sampledir = Path(expdir, "sampled_data")
+    datalist = np.array([
+        data | info
+        for data, info in map(
+            lambda x: fym.logging.load(x, with_info=True),
+            sampledir.glob("*.h5"))
+    ])
+
+    fig, axes = plt.subplots(4, 5, subplot_kw=dict(projection="3d"))
+
+    for ax in axes.flat:
+        ax.quad = Quadrotor(ax)
+
+    imgpaths = []
+
+    for i in itertools.count():
+        for data, ax in zip(datalist, axes.flat):
+            if iterstop := i == len(data["t"]) - 1:
+                break
+
+            pos = - data["plant"]["pos"][i].squeeze()
+            R = data["plant"]["R"][i].squeeze()
+
+            ax.quad.set(pos, R)
+
+            # axis limit
+            ax.set_xlim3d(-0.5, 0.5)
+            ax.set_ylim3d(-0.5, 0.5)
+            ax.set_zlim3d(0.5, 1.5)
+
+        else:
+            imgpath = Path(tmpdir, f"img_{i:04d}.png")
+            fig.savefig(imgpath)
+            imgpaths.append(imgpath)
+
+        if iterstop:
+            break
+
+    print("Loop completed")
+
+    os.system(f"ffmpeg -r 100 -i {tmpdir}/img_%04d.png -vcodec mpeg4 -y "
+              f"{imgdir}/movie.mp4")
+
+
 def main():
     # exp1()
     # exp1_plot()
@@ -1512,7 +1887,10 @@ def main():
     # exp5_plot()
 
     # exp6()
-    exp6_plot()
+    # exp6_plot()
+
+    # exp7()
+    exp7_plot()
 
 
 if __name__ == "__main__":
