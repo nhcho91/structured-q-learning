@@ -5,7 +5,6 @@ from pathlib import Path
 import itertools
 import logging
 import random
-import os
 
 from fym.core import BaseEnv, BaseSystem
 from fym.agents import LQR
@@ -14,6 +13,7 @@ import fym.logging
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 import plot
 import wingrock
@@ -1640,7 +1640,7 @@ def exp7():
 
         agents.load_config()
         agent = agents.SQLAgent(
-            Q=cfg.agent.Q, R=cfg.agent.R, F=-np.eye(cfg.agent.R.shape[0]))
+            Q=cfg.agent.Q, R=cfg.agent.R, F=-100 * np.eye(cfg.agent.R.shape[0]))
         agent.logger = fym.logging.Logger(Path(cfg.path.train, "result.h5"))
 
         # Random sample N data
@@ -1727,10 +1727,10 @@ def exp7():
         cfg.test = SN()
         cfg.test.init = SN()
         cfg.test.init.pos = np.vstack((0.1, 0.1, -0.9))
-        cfg.test.init.omega = np.vstack((0.1, 0.1, -0.1))
+        cfg.test.init.omega = np.vstack((0.2, 0.2, -0.1))
         cfg.test.kwargs = SN()
         cfg.test.kwargs.dt = 10
-        cfg.test.kwargs.max_t = 10
+        cfg.test.kwargs.max_t = 50
         cfg.test.kwargs.solver = "odeint"
         cfg.test.kwargs.ode_step_len = 1000
 
@@ -1744,8 +1744,8 @@ def exp7():
     # sample(env, "sample_%02d.h5")
 
     # ------ Traning ------#
-    # logs.set_logger(cfg.path.exp, "train.log")
-    # train()
+    logs.set_logger(cfg.path.exp, "train.log")
+    train()
 
     # ------ Test ------#
     test(train_path=Path(cfg.path.train, "result.h5"))
@@ -1806,8 +1806,7 @@ def exp7_plot():
 
             for rotor in self.rotors:
                 rotor._segment3d = np.array([
-                    R @ (point - rotor._center) + rotor._center
-                    for point in rotor._base
+                    R @ point for point in rotor._base
                 ])
 
             # Translate
@@ -1816,58 +1815,107 @@ def exp7_plot():
             for rotor in self.rotors:
                 rotor._segment3d = rotor._segment3d + pos
 
+    class Animator:
+        def __init__(self, fig, datalist):
+            self.offsets = ['collections', 'patches', 'lines',
+                            'texts', 'artists', 'images']
+            self.fig = fig
+            self.axes = fig.axes
+            self.datalist = datalist
+
+        def init(self):
+            self.frame_artists = []
+
+            for ax in self.axes:
+                ax.quad = Quadrotor(ax)
+
+                # set an axis
+                ax.set_xlim3d(-0.5, 0.5)
+                ax.set_ylim3d(-0.5, 0.5)
+                ax.set_zlim3d(0.5, 1.5)
+                ax.set_xticks((-0.5, 0.5))
+                ax.set_yticks((-0.5, 0.5))
+                ax.set_zticks((0.5, 1.5))
+
+                ax.tick_params(labelsize=6)
+
+                for name in self.offsets:
+                    self.frame_artists += getattr(ax, name)
+
+            self.fig.subplots_adjust(
+                left=0.1, right=0.9, top=0.9, bottom=0.1,
+                wspace=0.2, hspace=0.2)
+
+            return self.frame_artists
+
+        def get_sample(self):
+            self.init()
+            self.update(0)
+            self.fig.show()
+
+        def update(self, frame):
+            for data, ax in zip(self.datalist, self.axes):
+                pos = - data["plant"]["pos"][frame].squeeze()
+                R = data["plant"]["R"][frame].squeeze()
+                ax.quad.set(pos, R)
+
+            return self.frame_artists
+
+        def animate(self, *args, **kwargs):
+            frames = range(0, len(self.datalist[0]["t"]), 10)
+
+            self.anim = FuncAnimation(
+                self.fig, self.update, init_func=self.init,
+                frames=frames, interval=10, blit=True,
+                *args, **kwargs)
+
+        def save(self, fname, *args, **kwargs):
+            self.anim.save(Path(imgdir, fname), writer="ffmpeg", fps=30,
+                           *args, **kwargs)
+
+    def plot_sampled_data():
+        datalist = np.array([
+            data | info
+            for data, info in map(
+                lambda x: fym.logging.load(x, with_info=True),
+                sampledir.glob("*.h5"))
+        ])
+
+        fig, axes = plt.subplots(4, 5, subplot_kw=dict(projection="3d"))
+
+        animator = Animator(fig, datalist)
+        # animator.get_sample()
+        animator.animate()
+        animator.save("animation.mp4")
+
+    def plot_test_data():
+        # ------ Test ------ #
+        data, info = fym.logging.load(testpath, with_info=True)
+
+        fig = plt.figure()
+        plt.subplot(111, projection="3d")
+
+        animator = Animator(fig, [data | info])
+        # animator.get_sample()
+        animator.animate()
+        animator.save("test-animation.mp4")
+
+#         fig, axes = plt.subplots()
+
+#         # All states
+#         plt.plot(data["t"], data["dx"].squeeze())
+#         plt.show()
+
     # ------ Set paths ------ #
     expdir = Path("data", "exp7")
+    sampledir = Path(expdir, "sampled_data")
+    testpath = Path(expdir, "test", "env.h5")
 
     imgdir = Path("img", expdir.relative_to("data"))
     imgdir.mkdir(exist_ok=True)
 
-    tmpdir = Path(imgdir, "_tmp")
-    tmpdir.mkdir(exist_ok=True)
-
-    # ------ Sampled data ------ #
-    sampledir = Path(expdir, "sampled_data")
-    datalist = np.array([
-        data | info
-        for data, info in map(
-            lambda x: fym.logging.load(x, with_info=True),
-            sampledir.glob("*.h5"))
-    ])
-
-    fig, axes = plt.subplots(4, 5, subplot_kw=dict(projection="3d"))
-
-    for ax in axes.flat:
-        ax.quad = Quadrotor(ax)
-
-    imgpaths = []
-
-    for i in itertools.count():
-        for data, ax in zip(datalist, axes.flat):
-            if iterstop := i == len(data["t"]) - 1:
-                break
-
-            pos = - data["plant"]["pos"][i].squeeze()
-            R = data["plant"]["R"][i].squeeze()
-
-            ax.quad.set(pos, R)
-
-            # axis limit
-            ax.set_xlim3d(-0.5, 0.5)
-            ax.set_ylim3d(-0.5, 0.5)
-            ax.set_zlim3d(0.5, 1.5)
-
-        else:
-            imgpath = Path(tmpdir, f"img_{i:04d}.png")
-            fig.savefig(imgpath)
-            imgpaths.append(imgpath)
-
-        if iterstop:
-            break
-
-    print("Loop completed")
-
-    os.system(f"ffmpeg -r 100 -i {tmpdir}/img_%04d.png -vcodec mpeg4 -y "
-              f"{imgdir}/movie.mp4")
+    # plot_sampled_data()
+    plot_test_data()
 
 
 def main():
@@ -1889,7 +1937,7 @@ def main():
     # exp6()
     # exp6_plot()
 
-    # exp7()
+    exp7()
     exp7_plot()
 
 
