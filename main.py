@@ -902,32 +902,19 @@ def exp5():
             H11, H21, H22 = blkH[:n, :n], blkH[n:, :n], blkH[n:, n:]
             next_K = K + np.linalg.inv(H22).dot(H21)
 
+            eigvals, eigvecs = np.linalg.eig(A - B.dot(K))
+            # eigvec = eigvecs[:, -1]
+            if np.linalg.eigvals(H22).min() > 0:
+                # print(eigvec.T @ H11 @ eigvec)
+                Binv = np.linalg.pinv(B)
+                H11min = Q + (A - np.eye(n)).T @ Binv.T @ R @ Binv @ (A - np.eye(n))
+                print(np.linalg.eigvals(H11).min())
+                print(-np.linalg.eigvals(H11min).max())
+                breakpoint()
+
             P = H11 - H21.T.dot(np.linalg.inv(H22)).dot(H21)
 
             next_H11 = P
-
-            print("Ak: ", sorted(np.linalg.eigvals(A - B.dot(K)).real))
-            print("-Dk: ", sorted(-np.linalg.eigvals(H21.T.dot(np.linalg.inv(H22)).dot(H21)).real))
-            print("Hk: ", sorted(np.linalg.eigvals(H11).real))
-            print("H21_n: ", np.linalg.norm(H21))
-
-            Ak = A - B.dot(K)
-            print(
-                sorted(np.linalg.eigvals(
-                    (Ak + np.eye(n)).dot(np.linalg.inv(Ak - np.eye(n)))).real)
-            )
-            # if prev_H21 is not None:
-            #     print(np.linalg.norm(
-            #         prev_H21.dot(A - B.dot(K) + np.eye(n))
-            #         - H21.dot(A - B.dot(K) - np.eye(n)))
-            #     )
-
-            # print("Kkd: ",
-            #       np.sum((K - np.linalg.inv(R).dot(B.T).dot(H11))**2))
-            print("")
-
-            if np.all(np.linalg.eigvals(A - B.dot(K)).real < 0):
-                breakpoint()
 
             Kt = Kopt - K
             blkKt = np.block([[np.eye(n), np.zeros_like(B)], [-Kt, np.eye(m)]])
@@ -945,9 +932,6 @@ def exp5():
                 P_s=P_s, Peig=Peig, K0=K0, H11=H11, next_H11=next_H11,
             )
 
-            # if np.all(np.linalg.eigvals(A - B.dot(K)).real < 0):
-            #     break
-
             if ((K - next_K)**2).sum() < eps or i > maxiter:
                 break
 
@@ -961,7 +945,7 @@ def exp5():
     sql(K, "sql-unstable.h5")
 
     # Stabiling initial gain
-    K, *_ = LQR.clqr(A, B, np.eye(n), np.eye(m))
+    K, *_ = LQR.clqr(A, B, 2 * np.eye(n), 2 * np.eye(m))
     kleinman(K, "kleinman-stable.h5")
     sql(K, "sql-stable.h5")
 
@@ -1588,9 +1572,9 @@ def exp7():
                     break
             return t_hist, ode_hist, done
 
-        def logger_callback(self, i, t, y, *args):
-            state_dict = self.observe_dict(y)
-            plant_states = self.plant.observe_list(y[self.plant.flat_index])
+        def logger_callback(self, t):
+            state_dict = self.observe_dict()
+            plant_states = self.plant.observe_list()
             dx, du, xdot, u = self._calc(t, plant_states)
             return dict(t=t, dx=dx, du=du, xdot=xdot, u=u, **state_dict)
 
@@ -1640,7 +1624,7 @@ def exp7():
 
         agents.load_config()
         agent = agents.SQLAgent(
-            Q=cfg.agent.Q, R=cfg.agent.R, F=-100 * np.eye(cfg.agent.R.shape[0]))
+            Q=cfg.agent.Q, R=cfg.agent.R, F=-cfg.train.s*np.eye(cfg.agent.R.shape[0]))
         agent.logger = fym.logging.Logger(Path(cfg.path.train, "result.h5"))
 
         # Random sample N data
@@ -1670,6 +1654,12 @@ def exp7():
         agent.logger.close()
 
     def test(train_path):
+        def logger_callback(self, t):
+            state_dict = self.observe_dict()
+            plant_states = self.plant.observe_list()
+            dx, du, xdot, u = self._calc(t, plant_states)
+            return dict(t=t, dx=dx, du=du, xdot=xdot, u=u, **state_dict)
+
         cfg.quad.init = SN(**vars(cfg.quad.init) | vars(cfg.test.init))
         cfg.env.kwargs = SN(**vars(cfg.env.kwargs) | vars(cfg.test.kwargs))
 
@@ -1701,7 +1691,7 @@ def exp7():
         cfg.env = SN()
         cfg.env.kwargs = SN()
         cfg.env.kwargs.dt = 10
-        cfg.env.kwargs.max_t = 10
+        cfg.env.kwargs.max_t = 20
         cfg.env.kwargs.solver = "odeint"
         cfg.env.kwargs.ode_step_len = 1000
 
@@ -1717,12 +1707,20 @@ def exp7():
         cfg.sample.n_trial = 20
 
         cfg.agent = SN()
-        cfg.agent.Q = np.diag([1]*3 + [0]*3 + [1]*3 + [0]*3)
+        # cfg.agent.Q = np.diag([1]*3 + [0]*3 + [1]*3 + [0]*3)
+        cfg.agent.Q = np.diag([
+            1, 1, 1,
+            0, 0, 0,
+            100, 100, 100,
+            1, 1, 1
+        ])
+        # cfg.agent.Q = np.diag(np.ones(12))
         cfg.agent.R = np.diag([10, 10, 10, 10])
 
         cfg.train = SN()
-        cfg.train.n_batch = 10000
-        cfg.train.n_step = 1000
+        cfg.train.n_batch = 1000
+        cfg.train.n_step = 100
+        cfg.train.s = 1
 
         cfg.test = SN()
         cfg.test.init = SN()
@@ -1739,16 +1737,17 @@ def exp7():
     random.seed(0)
     np.random.seed(0)
 
-    # ------ Sampling ------#
+    # # ------ Sampling ------#
+    # cfg.env.kwargs.max_t = 20
     # env = Env()
     # sample(env, "sample_%02d.h5")
 
-    # ------ Traning ------#
-    logs.set_logger(cfg.path.exp, "train.log")
-    train()
+    # # ------ Traning ------#
+    # logs.set_logger(cfg.path.exp, "train.log")
+    # train()
 
-    # ------ Test ------#
-    test(train_path=Path(cfg.path.train, "result.h5"))
+    # # ------ Test ------#
+    # test(train_path=Path(cfg.path.train, "result.h5"))
 
 
 def exp7_plot():
@@ -1888,6 +1887,34 @@ def exp7_plot():
         animator.animate()
         animator.save("animation.mp4")
 
+    def plot_train_data():
+        # ------ Train ------ #
+        data, info = fym.logging.load(trainpath, with_info=True)
+        _, cfginfo = fym.logging.load(Path(expdir, "cfg.h5"), with_info=True)
+        cfg = cfginfo["cfg"]
+
+        shape = (len(data["i"]), -1)
+        plt.figure()
+
+        ax = plt.subplot(211)
+        line, *_ = plt.plot(
+            data["i"], data["P"].reshape(shape), "k-")
+        for p in cfg.P.ravel():
+            refline = plt.axhline(p, c="r", ls="--")
+        plt.ylabel(r"$P$")
+        plt.legend([refline, line], ["True", "Trained"])
+
+        plt.subplot(212, sharex=ax)
+        plt.plot(data["i"], data["K"].reshape(shape), "k-")
+        for k in cfg.K.ravel():
+            plt.axhline(k, c="r", ls="--")
+        plt.ylabel(r"$K$")
+        plt.xlabel("Iteration")
+        plt.xlim(data["i"][[0, -1]])
+
+        plt.savefig(Path(imgdir, "train.pdf"))
+        plt.show()
+
     def plot_test_data():
         # ------ Test ------ #
         data, info = fym.logging.load(testpath, with_info=True)
@@ -1909,13 +1936,15 @@ def exp7_plot():
     # ------ Set paths ------ #
     expdir = Path("data", "exp7")
     sampledir = Path(expdir, "sampled_data")
+    trainpath = Path(expdir, "train", "result.h5")
     testpath = Path(expdir, "test", "env.h5")
 
     imgdir = Path("img", expdir.relative_to("data"))
     imgdir.mkdir(exist_ok=True)
 
     # plot_sampled_data()
-    plot_test_data()
+    plot_train_data()
+    # plot_test_data()
 
 
 def main():
@@ -1937,7 +1966,7 @@ def main():
     # exp6()
     # exp6_plot()
 
-    exp7()
+    # exp7()
     exp7_plot()
 
 
