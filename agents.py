@@ -201,12 +201,13 @@ class KLMAgent(Agent):
         self.W1 = W1_init if W1_init is not None else np.zeros((n, n))
         self.W2 = W2_init if W2_init is not None else np.zeros((m, n))
         self.K = K_init if K_init is not None else np.zeros((m, n))
-        self.P = self.W1 - self.K.T.dot(self.R).dot(self.K)
 
         self.n, self.m = n, m
 
         self.W1_his = np.zeros((self.N, self.n, self.n))
         self.W2_his = np.zeros((self.N, self.m, self.n))
+
+        self.P = self.W1 - self.K.T.dot(self.R).dot(self.K)
 
     def logger_callback(self):
         return dict(
@@ -214,6 +215,56 @@ class KLMAgent(Agent):
             W1_his=self.W1_his, W2_his=self.W2_his,
             P=self.P,
         )
+
+    def step(self, batch):
+        y_stack = []
+        phi_stack = []
+        K = self.K
+        loss = 0
+
+        for b in batch:
+            x, u, xdot = b
+
+            lxu = 0.5 * (
+                x.T.dot(self.Q + K.T.dot(self.R).dot(K)).dot(x))
+
+            # phi1 = np.kron(xdot, x)
+            phi1 = 0.5 * np.kron(x, xdot) + 0.5 * np.kron(xdot, x)
+            phi2 = - np.kron(x, self.R.dot(u + K.dot(x)))
+            phi = np.vstack((phi1, phi2))
+
+            y = - lxu
+
+            y_stack.append(y)
+            phi_stack.append(phi.T)
+
+        Y = np.vstack(y_stack)
+        Phi = np.vstack(phi_stack)
+
+        w1s = self.n * self.n
+        w2s = self.n * self.m
+        w = np.linalg.pinv(Phi).dot(Y)
+        w1, w2 = w[:w1s], w[w1s:w1s + w2s]
+
+        W1 = w1.reshape(self.n, self.n, order="F")
+        W2 = w2.reshape(self.m, self.n, order="F")
+        P = W1
+
+        next_K = W2
+
+        loss = ((Y - Phi.dot(w))**2).sum()
+        error = ((next_K - K)**2).sum()
+
+        logger.debug(
+            f"[{type(self).__name__}] "
+            f"Loss: {loss:07.4f} | "
+            f"Error: {error:07.4f}"
+        )
+
+        # Policy Improvement
+        self.K = next_K
+
+        return dict(K=K, W1=W1, W2=W2, next_K=next_K, P=P)
 
     def train(self, t):
         for i in range(self.N):
