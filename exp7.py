@@ -33,8 +33,12 @@ def load_config():
             "sample": Path(cfg.path.base, "sampled_data"),
             "train.sql": Path(cfg.path.base, "train", "result-sql.h5"),
             "train.klm": Path(cfg.path.base, "train", "result-klm.h5"),
+            "train.sql_stable": Path(cfg.path.base, "train", "result-sql-stable.h5"),
+            "train.klm_stable": Path(cfg.path.base, "train", "result-klm-stable.h5"),
             "test.sql": Path(cfg.path.base, "test", "env-sql.h5"),
             "test.klm": Path(cfg.path.base, "test", "env-klm.h5"),
+            "test.sql_stable": Path(cfg.path.base, "test", "env-sql-stable.h5"),
+            "test.klm_stable": Path(cfg.path.base, "test", "env-klm-stable.h5"),
             "img": Path("img", cfg.path.base.relative_to("data")),
         },
         "env.kwargs": {
@@ -95,13 +99,17 @@ class Env(BaseEnv):
         gain = np.zeros_like(self.B.T)
         self.controller = NoisyLQR(gain, self.xtrim, self.utrim)
 
-    def set_random_behavior(self):
+    def get_random_stable_gain(self):
         A = self.A + 0 * np.random.randn(*self.A.shape)
         B = self.B + 0 * np.random.randn(*self.B.shape)
         Q = np.diag(np.random.rand(cfg.agent.Q.shape[0]))
         R = np.diag(np.random.rand(cfg.agent.R.shape[0]))
         # R = np.random.rand() * cfg.agent.R
         gain, _ = LQR.clqr(A, B, Q, R)
+        return gain
+
+    def set_random_behavior(self):
+        gain = self.get_random_stable_gain()
         amp, freq, phase = np.random.rand(3, 4, 1)
         noise = lambda t: 0.5 * amp * np.sin(freq * t + phase)
         self.controller = NoisyLQR(gain, self.xtrim, self.utrim, noise)
@@ -273,102 +281,125 @@ def plot_train_data():
     import pandas as pd
     import seaborn as sns
 
-    # ------ Train ------ #
-    sql = fym.parser.parse({
-        "data": fym.parser.parse(fym.load(cfg.path.train.sql)),
-    })
-    klm = fym.parser.parse({
-        "data": fym.parser.parse(fym.load(cfg.path.train.klm)),
-    })
-    _, info = fym.logging.load(Path(cfg.path.base, "cfg.h5"), with_info=True)
-    ref = fym.parser.parse({
-        "data": {
-            "P": info["cfg"].P,
-            "K": info["cfg"].K,
-        },
-    })
+    def plot_train_hist(initial="unstable"):
 
-    color_palette = sns.color_palette()
-    sql.style = dict(color=color_palette[0], lw=1)
-    klm.style = dict(color=color_palette[2], lw=1)
-    ref.style = dict(color=color_palette[3], ls="--")
+        if initial == "unstable":
+            sqlpath = cfg.path.train.sql
+            klmpath = cfg.path.train.klm
+        elif initial == "stable":
+            sqlpath = cfg.path.train.sql_stable
+            klmpath = cfg.path.train.klm_stable
 
-    shape = (len(sql.data.i), -1)
+        # ------ Train ------ #
+        sql = fym.parser.parse({
+            "data": fym.parser.parse(fym.load(sqlpath)),
+        })
+        klm = fym.parser.parse({
+            "data": fym.parser.parse(fym.load(klmpath)),
+        })
+        _, info = fym.logging.load(Path(cfg.path.base, "cfg.h5"), with_info=True)
+        ref = fym.parser.parse({
+            "data": {
+                "P": info["cfg"].P,
+                "K": info["cfg"].K,
+            },
+        })
 
-    # ------ Figure 1 ------ #
-    plt.rc("axes", grid=True)
+        color_palette = sns.color_palette()
+        sql.style = dict(color=color_palette[0], lw=1)
+        klm.style = dict(color=color_palette[2], lw=1)
+        ref.style = dict(color=color_palette[3], ls="--")
 
-    def plot_rolling(exp, x, window=5, alpha=0.2):
-        rolling = pd.DataFrame(x).rolling(window=window)
-        mean = rolling.mean().to_numpy().ravel()
-        std = rolling.std().to_numpy().ravel()
-        line, = plt.plot(exp.data.i, mean, **exp.style)
-        plt.fill_between(exp.data.i, mean - std, mean + std,
-                         **exp.style | dict(alpha=alpha, lw=0))
-        return line
+        shape = (len(sql.data.i), -1)
 
-    fig, axes = plt.subplots(3, 2, sharex=True)
+        # ------ Figure 1 ------ #
+        plt.rc("axes", grid=True)
 
-    # SQL
-    plt.axes(axes[0, 0])
-    [plt.axhline(p, **ref.style) for p in ref.data.P.ravel()]
-    sql_line, *_ = [plot_rolling(sql, p) for p in sql.data.P.reshape(shape).T]
-    plt.ylabel(r"$P$")
-    plt.ylim(-100, 35000)
-    plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        def plot_rolling(exp, x, window=5, alpha=0.2):
+            rolling = pd.DataFrame(x).rolling(window=window)
+            mean = rolling.mean().to_numpy().ravel()
+            std = rolling.std().to_numpy().ravel()
+            line, = plt.plot(exp.data.i, mean, **exp.style)
+            plt.fill_between(exp.data.i, mean - std, mean + std,
+                             **exp.style | dict(alpha=alpha, lw=0))
+            return line
 
-    plt.axes(axes[1, 0])
-    [plt.axhline(p, **ref.style) for p in ref.data.K.ravel()]
-    [plot_rolling(sql, k) for k in sql.data.K.reshape(shape).T]
-    plt.ylabel(r"$K$")
-    plt.ylim(-30, 30)
+        fig, axes = plt.subplots(3, 2, sharex=True)
 
-    plt.axes(axes[2, 0])
-    error = np.linalg.norm(sql.data.P - ref.data.P, axis=(1, 2))
-    plot_rolling(sql, error, alpha=0.3)
-    plt.ylabel(r"$\|\|\tilde{P}\|\|$")
-    plt.ylim(1e0, 5e4)
-    plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        # SQL
+        plt.axes(axes[0, 0])
+        [plt.axhline(p, **ref.style) for p in ref.data.P.ravel()]
+        sql_line, *_ = [plot_rolling(sql, p) for p in sql.data.P.reshape(shape).T]
+        plt.ylabel(r"$P$")
+        plt.ylim(-100, 35000)
+        plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
-    plt.xlabel("Iteration")
-    plt.xlim(sql.data.i[[0, -1]])
+        plt.axes(axes[1, 0])
+        [plt.axhline(p, **ref.style) for p in ref.data.K.ravel()]
+        [plot_rolling(sql, k) for k in sql.data.K.reshape(shape).T]
+        plt.ylabel(r"$K$")
+        plt.ylim(-30, 30)
 
-    # Kleinman
-    plt.axes(axes[0, 1])
-    [plt.axhline(p, **ref.style) for p in ref.data.P.ravel()]
-    klm_line, *_ = [plot_rolling(klm, p) for p in klm.data.P.reshape(shape).T]
-    plt.ylim(-100, 35000)
-    plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        plt.axes(axes[2, 0])
+        error = np.linalg.norm(sql.data.P - ref.data.P, axis=(1, 2))
+        plot_rolling(sql, error, alpha=0.3)
+        plt.ylabel(r"$\|\|\tilde{P}\|\|$")
+        if initial == "unstable":
+            plt.ylim(0, 5e4)
+        elif initial == "stable":
+            plt.ylim(0, 5e3)
+        plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
-    plt.axes(axes[1, 1])
-    [plt.axhline(p, **ref.style) for p in ref.data.K.ravel()]
-    [plot_rolling(klm, k) for k in klm.data.K.reshape(shape).T]
-    plt.ylim(-30, 30)
+        plt.xlabel("Iteration")
+        plt.xlim(sql.data.i[[0, -1]])
 
-    plt.axes(axes[2, 1])
-    error = np.linalg.norm(klm.data.P - ref.data.P, axis=(1, 2))
-    plot_rolling(klm, error, alpha=0.3)
-    plt.ylim(1e0, 5e4)
-    plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        # Kleinman
+        plt.axes(axes[0, 1])
+        [plt.axhline(p, **ref.style) for p in ref.data.P.ravel()]
+        klm_line, *_ = [plot_rolling(klm, p) for p in klm.data.P.reshape(shape).T]
+        plt.ylim(-100, 35000)
+        plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
-    plt.xlabel("Iteration")
-    plt.xlim(klm.data.i[[0, -1]])
+        plt.axes(axes[1, 1])
+        [plt.axhline(p, **ref.style) for p in ref.data.K.ravel()]
+        [plot_rolling(klm, k) for k in klm.data.K.reshape(shape).T]
+        plt.ylim(-30, 30)
 
-    fig.set_size_inches(8.78, 4.3)
-    fig.align_ylabels(axes)
-    fig.tight_layout()
+        plt.axes(axes[2, 1])
+        error = np.linalg.norm(klm.data.P - ref.data.P, axis=(1, 2))
+        plot_rolling(klm, error, alpha=0.3)
+        if initial == "unstable":
+            plt.ylim(0, 5e4)
+        elif initial == "stable":
+            plt.ylim(0, 5e3)
+        plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
-    # def when_resize(event):
-    #     print(fig.get_size_inches(), end="\r")
+        plt.xlabel("Iteration")
+        plt.xlim(klm.data.i[[0, -1]])
 
-    # fig.canvas.mpl_connect("resize_event", when_resize)
+        fig.set_size_inches(8.78, 4.3)
+        fig.align_ylabels(axes)
+        fig.tight_layout()
 
-    fig.legend([sql_line, klm_line], ["SQL", "Kleinman"],
-               bbox_to_anchor=[0.5, 0.91],
-               loc="lower center", ncol=2)
-    fig.subplots_adjust(top=0.88)
+        # def when_resize(event):
+        #     print(fig.get_size_inches(), end="\r")
 
-    fig.savefig(Path(cfg.path.img, "train.pdf"))
+        # fig.canvas.mpl_connect("resize_event", when_resize)
+
+        fig.legend([sql_line, klm_line], ["SQL", "Kleinman"],
+                   bbox_to_anchor=[0.5, 0.91],
+                   loc="lower center", ncol=2)
+        fig.subplots_adjust(top=0.88)
+
+        if initial == "unstable":
+            fig.savefig(Path(cfg.path.img, "train.pdf"))
+        elif initial == "stable":
+            fig.savefig(Path(cfg.path.img, "train-stable.pdf"))
+
+    # ------ Figure 2 ------ #
+
+    # plot_train_hist(initial="unstable")
+    plot_train_hist(initial="stable")
 
     plt.show()
 
@@ -556,17 +587,6 @@ def plot_test_data():
     animator.save("test-klm.mp4")
 
 
-def plot():
-    load_config()
-
-    # ------ Set paths ------ #
-    cfg.path.img.mkdir(exist_ok=True)
-
-    # plot_sampled_data()
-    # plot_train_data()
-    plot_test_data()
-
-
 def main():
     """Experiment 7
     This experiment demonstrates the performance of SQL
@@ -595,7 +615,7 @@ def main():
 
     logs.set_logger(cfg.path.base, "train.log")
 
-    # # SQLAgent
+    # ------ Training Unstable: SQL ------#
     # agents.load_config()
     # agent = agents.SQLAgent(
     #     Q=cfg.agent.Q,
@@ -605,11 +625,32 @@ def main():
     # agent.logger = fym.logging.Logger(cfg.path.train.sql)
     # train(agent=agent)
 
-    # # KLMAgent
+    # ------ Training Unstable: KLM ------#
     # agents.load_config()
     # agent = agents.KLMAgent(Q=cfg.agent.Q, R=cfg.agent.R)
     # agent.logger = fym.Logger(cfg.path.train.klm)
     # train(agent=agent)
+
+    # ------ Training Stable ------#
+    env = Env()
+    K = env.get_random_stable_gain()
+
+    # ------ Training Stable: SQL ------#
+    agents.load_config()
+    agent = agents.SQLAgent(
+        Q=cfg.agent.Q,
+        R=cfg.agent.R,
+        F=-cfg.train.s*np.eye(cfg.agent.R.shape[0]),
+        K_init=K
+    )
+    agent.logger = fym.logging.Logger(cfg.path.train.sql_stable)
+    train(agent=agent)
+
+    # ------ Training Stable: KLM ------#
+    agents.load_config()
+    agent = agents.KLMAgent(Q=cfg.agent.Q, R=cfg.agent.R, K_init=K)
+    agent.logger = fym.Logger(cfg.path.train.klm_stable)
+    train(agent=agent)
 
     # ------ Test ------ #
 
@@ -622,6 +663,17 @@ def main():
     #      savepath=Path(cfg.path.test.klm))
 
     # print(f"Elapsed time is {time.time() - t0} seconds.")
+
+
+def plot():
+    load_config()
+
+    # ------ Set paths ------ #
+    cfg.path.img.mkdir(exist_ok=True)
+
+    # plot_sampled_data()
+    plot_train_data()
+    # plot_test_data()
 
 
 if __name__ == "__main__":
